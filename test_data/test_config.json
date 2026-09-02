@@ -1,0 +1,28 @@
+{
+  "test_cases": [
+    {
+      "test_name": "Self Introduction Recording",
+      "audio_path": "test_data/recordings/4914_self_intro.mp4",
+      "reference_transcript": "Hello, my name is John Doe and I am a software engineer with five years of experience in full stack development. I specialize in Python, JavaScript, and cloud technologies. I have worked on various projects including web applications, mobile apps, and data processing systems. I am passionate about building scalable and efficient software solutions that solve real-world problems.",
+      "test_conditions": "Normal speech, clear audio"
+    },
+    {
+      "test_name": "Technical Interview Response",
+      "audio_path": "test_data/recordings/technical_response.mp4",
+      "reference_transcript": "The main difference between SQL and NoSQL databases is their data model. SQL databases are relational and use structured tables with predefined schemas, while NoSQL databases are non-relational and offer flexible data models. SQL is better for structured data with complex relationships, while NoSQL excels at handling unstructured data and horizontal scaling.",
+      "test_conditions": "Technical vocabulary, normal speech"
+    },
+    {
+      "test_name": "Fast Speech Example",
+      "audio_path": "test_data/recordings/fast_speech.mp4",
+      "reference_transcript": "I have experience with multiple programming languages including Java Python C++ and JavaScript. I have worked on both frontend and backend development using React Angular Node.js and Django. I am familiar with cloud platforms like AWS Azure and Google Cloud.",
+      "test_conditions": "Fast speech, technical terms"
+    },
+    {
+      "test_name": "Background Noise Test",
+      "audio_path": "test_data/recordings/noisy_environment.mp4",
+      "reference_transcript": "My approach to problem solving involves breaking down complex issues into smaller manageable tasks. I then prioritize these tasks based on their impact and dependencies. This method helps me tackle challenges systematically and efficiently.",
+      "test_conditions": "Background noise present"
+    }
+  ]
+}

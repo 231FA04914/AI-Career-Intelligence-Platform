@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+
+# Uploaded/generated media
+data/uploads/
+data/audio/
+data/transcripts/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Audio/video files
+*.mp3
+*.mp4
+*.wav
+*.m4a
+*.webm
+
+# OS files
+.DS_Store
+Thumbs.db
