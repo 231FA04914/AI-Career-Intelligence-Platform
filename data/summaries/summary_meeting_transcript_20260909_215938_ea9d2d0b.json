@@ -1,0 +1,24 @@
+{
+  "summary_id": "ea9d2d0b-b9b3-4d8c-b5b6-8d1389759bf6",
+  "source_name": "meeting_transcript.txt",
+  "timestamp": "20260909_215938",
+  "created_at": "2026-09-09T21:59:38.373053",
+  "metadata": {},
+  "data": {
+    "summary": "The candidate discussed having five years of Python development experience, specifically in data analysis and web development using Django and Flask. They highlighted recent projects, including building a machine learning pipeline for customer churn prediction and developing a REST API for an e-commerce platform.",
+    "key_decisions": [],
+    "action_items": [],
+    "key_points": [
+      "Candidate has 5 years of Python experience.",
+      "Experience focuses on data analysis and web development using Django and Flask.",
+      "Recent project: Built a machine learning pipeline for predicting customer churn.",
+      "Recent project: Developed a REST API for an e-commerce platform."
+    ],
+    "participants": [
+      "Interviewer",
+      "Candidate"
+    ],
+    "deadlines": [],
+    "priorities": []
+  }
+}

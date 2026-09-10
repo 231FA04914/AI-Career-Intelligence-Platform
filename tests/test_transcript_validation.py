@@ -137,6 +137,7 @@ def test_quality_metrics():
     
     metrics = TranscriptValidator.get_transcript_quality(transcript_data)
     
+    # The actual word count is 8, not 9
     assert metrics["word_count"] == 8, f"Expected 8 words, got {metrics['word_count']}"
     assert metrics["character_count"] == 45, f"Expected 45 characters, got {metrics['character_count']}"
     assert metrics["language"] == "en", f"Expected 'en', got {metrics['language']}"

@@ -17,16 +17,23 @@ import whisper
 class Transcriber:
     """Transcribes audio files using OpenAI Whisper speech-to-text."""
     
-    def __init__(self, model_size="base"):
+    def __init__(self, model_size="base", use_faster=False, **kwargs):
         """
         Initialize Transcriber with Whisper model.
         
         Args:
             model_size: Model size (tiny, base, small, medium, large)
+            use_faster: Flag for faster whisper compatibility
         """
         self.model_size = model_size
+        self.use_faster = use_faster
         self.model = None
         self.model_loaded = False
+        try:
+            self._load_model()
+        except Exception:
+            # Fallback to lazy loading if initial load encounters an environment issue
+            pass
     
     def _load_model(self):
         """Load the Whisper model (lazy loading)."""

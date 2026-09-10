@@ -147,15 +147,56 @@ pytest tests/ --cov=src
 - Use smaller model size (tiny or base) for limited RAM
 - Process shorter audio files initially
 
-## Current Features (Milestone 1)
+## Current Features
 
-- ✅ Audio/video file upload
-- ✅ File format validation
-- ✅ Audio extraction from video
-- ✅ Whisper transcription
-- ✅ Transcript validation
-- ✅ Transcript saving/loading
-- ✅ Streamlit interface
+### Milestone 1: Audio Processing & Transcription
+- ✅ Audio/video file upload (.mp3, .wav, .mp4, .mkv, etc.)
+- ✅ File format & duration validation
+- ✅ Audio extraction from video using FFmpeg
+- ✅ Whisper speech-to-text transcription
+- ✅ Transcript quality metrics and validation
+- ✅ Local transcript storage management
+
+### Milestone 2: Summarization & Action Extraction
+- ✅ **Task 1: LLM Service & Prompt Engineering**
+  - Configurable LLM service with Google Gemini API (`gemini-3.6-flash`)
+  - Structured output generation (Summary, Key Points, Decisions, Action Items, Participants, Deadlines, Priorities)
+  - Anti-hallucination prompt design
+  - Automatic chunking for long transcripts
+  - Exponential backoff retry logic & error handling
+- ✅ **Task 2: Meeting Summarization Module**
+  - Production-ready meeting summarizer (`src/summarizer.py`)
+  - Executive summary extraction
+  - Key decisions tracking
+  - Action item extraction with owners & deadlines formatted as `Action – Owner Deadline`
+  - Multi-format export (Markdown `.md`, Plain Text `.txt`, JSON `.json`)
+  - Persistent summary archive manager (`src/summary_manager.py`)
+  - Interactive Streamlit dashboard integration with one-click transcript selection
+- ✅ **Task 3: Action Item Extraction Engine**
+  - Dedicated task extraction pipeline (`src/action_item_extractor.py`)
+  - Tracks 4 core attributes: **Assigned Participant**, **Deadline**, **Priority**, and **Status**
+  - Interactive status management (Pending, In Progress, Completed, Blocked)
+  - Multi-attribute filtering (by Assignee, Priority, Status, keyword search)
+  - Flexible sorting (by Priority, Deadline, Assignee, Status)
+  - Multi-format exports: CSV (`.csv`), Markdown Table (`.md`), and JSON (`.json`)
+  - Live KPI metrics dashboard (Total Tasks, High Priority, Pending, In Progress, Completed)
+- ✅ **Task 4: Participant & Responsibility Mapping**
+  - Participant identification and alias canonicalization (`src/participant_mapper.py`)
+  - Consistent name normalization and title stripping
+  - Safe unknown participant handling (`Unassigned`)
+  - Automatic duplicate record merging and responsibility aggregation
+  - Links responsibilities and action items to corresponding meeting sessions
+  - Responsibility matrix generation (Markdown table & JSON exports)
+- ✅ **Task 5: Meeting Data Model & Database Persistence**
+  - SQLite database layer (`src/database.py`) with relational schema
+  - Tables: Meetings, Summaries, Decisions, Action Items, and Participants
+  - Relational querying, cross-meeting task filtering, and status updates
+  - Cascading deletion and transaction safety
+- ✅ **Task 6: Processing API & Service Integration**
+  - Complete end-to-end orchestration pipeline (`src/pipeline.py`)
+  - Seamless flow: `Upload Media → Whisper Transcription → LLM Processing → Summary → Action Extraction → Participant Mapping → Database`
+  - Real-time progress tracking across all pipeline stages
+  - One-click full pipeline execution in the Streamlit UI
 
 ## Future Modules
 

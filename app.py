@@ -1,188 +1,241 @@
 """
 AI Career Intelligence Platform - Main Application
-Streamlit interface for audio transcription.
+Executive-Grade AI SaaS Interface for Audio Transcription, LLM Intelligence & Career Analytics.
 """
 
 import os
 import ssl
-import streamlit as st
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
+import streamlit as st
 
-# Disable SSL verification for huggingface_hub
+# Load environment variables from the project root
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
+
+# Disable SSL verification for huggingface_hub if needed
 os.environ['HF_HUB_DISABLE_SSL_VERIFY'] = '1'
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Import Backend Services
 from src.audio_processor import AudioProcessor
 from src.transcriber import Transcriber
 from src.validator import FileValidator, TranscriptValidator
 from src.transcript_manager import TranscriptManager
+from src.summary_manager import SummaryManager
+from src.database import DatabaseManager
+from src.llm import LLMService, AuthenticationError
+from src.summarizer import MeetingSummarizer
+from src.action_item_extractor import ActionItemExtractor
+from src.participant_mapper import ParticipantMapper
+from src.pipeline import MeetingIntelligencePipeline
+
+# Import UI System & Views
+from src.ui.theme import apply_theme
+from src.ui.components import render_sidebar_brand, render_system_status, render_footer
+from src.ui.views.dashboard import render_dashboard_view
+from src.ui.views.interview_analysis import render_interview_analysis_view
+from src.ui.views.transcript_view import render_transcript_view
+from src.ui.views.ai_insights import render_ai_insights_view
+from src.ui.views.career_intelligence import render_career_intelligence_view
+from src.ui.views.interview_prep import render_interview_prep_view
+from src.ui.views.database_archive import render_database_archive_view
+from src.ui.views.settings_view import render_settings_view
 
 
-# Page configuration
+# Page Configuration
 st.set_page_config(
-    page_title="AI Career Intelligence Platform",
+    page_title="AI Career Intelligence",
     page_icon="🎙️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 
+def init_session_state():
+    """Initialize default session state keys."""
+    if "nav_page" not in st.session_state:
+        st.session_state["nav_page"] = "Dashboard"
+    if "active_transcript" not in st.session_state:
+        st.session_state["active_transcript"] = ""
+    if "active_source_name" not in st.session_state:
+        st.session_state["active_source_name"] = "interview_transcript.txt"
+    if "latest_summary" not in st.session_state:
+        st.session_state["latest_summary"] = None
+    if "extracted_actions_list" not in st.session_state:
+        st.session_state["extracted_actions_list"] = []
+    if "mapped_participants_list" not in st.session_state:
+        st.session_state["mapped_participants_list"] = []
+
+
 def main():
-    """Main application function."""
-    st.title("🎙️ AI Career Intelligence Platform")
-    st.markdown("---")
-    st.markdown("### Audio Processing & Transcription Module")
-    
-    # Initialize components
+    """Main application lifecycle and routing."""
+    # Apply modern SaaS CSS theme
+    apply_theme()
+    init_session_state()
+
+    # Initialize backend components
     audio_processor = AudioProcessor(use_temp=True)
     transcriber = Transcriber(model_size="base")
     file_validator = FileValidator()
     transcript_validator = TranscriptValidator()
     transcript_manager = TranscriptManager()
-    
-    # File upload section
-    st.markdown("#### Upload Interview Recording")
-    st.info(f"Supported formats: {file_validator.get_supported_formats()}")
-    
-    uploaded_file = st.file_uploader(
-        "Choose an audio or video file",
-        type=list(file_validator.AUDIO_FORMATS | file_validator.VIDEO_FORMATS)
+    summary_manager = SummaryManager()
+    db_manager = DatabaseManager()
+
+    # Initialize AI LLM Pipeline components
+    try:
+        llm_service = LLMService()
+        meeting_summarizer = MeetingSummarizer(llm_service=llm_service)
+        action_extractor = ActionItemExtractor(llm_service=llm_service)
+        participant_mapper = ParticipantMapper(llm_service=llm_service)
+        pipeline = MeetingIntelligencePipeline(
+            audio_processor=audio_processor,
+            transcriber=transcriber,
+            llm_service=llm_service,
+            db_manager=db_manager
+        )
+        ai_ready = True
+    except AuthenticationError:
+        llm_service = None
+        meeting_summarizer = None
+        action_extractor = None
+        participant_mapper = None
+        pipeline = None
+        ai_ready = False
+    except Exception:
+        llm_service = None
+        meeting_summarizer = None
+        action_extractor = None
+        participant_mapper = None
+        pipeline = None
+        ai_ready = False
+
+    # ----------------------------------------------------
+    # SIDEBAR NAVIGATION
+    # ----------------------------------------------------
+    render_sidebar_brand()
+
+    st.sidebar.markdown('<div class="nav-header">Main Navigation</div>', unsafe_allow_html=True)
+
+    nav_options = [
+        "🏠 Dashboard",
+        "🎤 Interview Analysis",
+        "📝 Transcript Workspace",
+        "🧠 AI Insights",
+        "📊 Career Intelligence",
+        "🎯 Interview Preparation",
+        "🗄️ Database & Archive",
+        "⚙️ Settings & Health"
+    ]
+
+    # Map current state to nav options
+    page_to_option = {
+        "Dashboard": "🏠 Dashboard",
+        "Interview Analysis": "🎤 Interview Analysis",
+        "Transcript Workspace": "📝 Transcript Workspace",
+        "AI Insights": "🧠 AI Insights",
+        "Career Intelligence": "📊 Career Intelligence",
+        "Interview Preparation": "🎯 Interview Preparation",
+        "Database & Archive": "🗄️ Database & Archive",
+        "Settings & Health": "⚙️ Settings & Health"
+    }
+    option_to_page = {v: k for k, v in page_to_option.items()}
+
+    current_idx = 0
+    if st.session_state["nav_page"] in page_to_option:
+        current_idx = nav_options.index(page_to_option[st.session_state["nav_page"]])
+
+    selected_option = st.sidebar.radio(
+        "Navigation",
+        options=nav_options,
+        index=current_idx,
+        label_visibility="collapsed"
     )
-    
-    if uploaded_file:
-        # Display file info
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"**Filename:** {uploaded_file.name}")
-            st.write(f"**File size:** {uploaded_file.size / (1024*1024):.2f} MB")
-        with col2:
-            file_type = "Video" if file_validator.is_video_file(uploaded_file.name) else "Audio"
-            st.write(f"**Type:** {file_type}")
-        
-        # Save uploaded file
-        upload_dir = Path(__file__).parent / "data" / "uploads"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        upload_path = upload_dir / uploaded_file.name
-        with open(upload_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        # Validate file
-        is_valid, error_msg = file_validator.validate_file(str(upload_path))
-        
-        if not is_valid:
-            st.error(f"❌ {error_msg}")
-            # Clean up uploaded file
-            if upload_path.exists():
-                upload_path.unlink()
-            return
-        
-        st.success("✅ File uploaded and validated successfully!")
-        
-        # Transcribe button
-        st.markdown("---")
-        if st.button("🎯 Transcribe Recording", type="primary"):
-            audio_path = None
-            try:
-                # Step 1: Process audio
-                with st.status("📁 Processing audio...", expanded=True) as status:
-                    st.write("Extracting/converting audio for transcription...")
-                    audio_path = audio_processor.extract_audio(str(upload_path))
-                    st.write(f"✅ Audio processed: {audio_path}")
-                    
-                    # Get audio duration
-                    duration = audio_processor.get_audio_duration(audio_path)
-                    st.write(f"⏱️ Audio duration: {duration:.2f} seconds")
-                    status.update(label="✅ Audio processing complete", state="complete")
-                
-                # Step 2: Transcribe with Whisper
-                with st.status("🎤 Transcribing with Whisper...", expanded=True) as status:
-                    st.write("Loading Whisper model and transcribing...")
-                    transcript_data = transcriber.transcribe(audio_path)
-                    st.write("✅ Transcription complete")
-                    status.update(label="✅ Transcription complete", state="complete")
-                
-                # Step 3: Validate transcript
-                is_valid, error_msg = transcript_validator.validate_transcript(transcript_data)
-                
-                if not is_valid:
-                    st.error(f"❌ {error_msg}")
-                    return
-                
-                # Step 4: Save transcript locally
-                with st.status("💾 Saving transcript...", expanded=True) as status:
-                    transcript_path = transcript_manager.save_transcript(
-                        transcript_data,
-                        uploaded_file.name,
-                        metadata={"duration": duration, "audio_path": audio_path}
-                    )
-                    st.write(f"✅ Transcript saved to: {transcript_path}")
-                    status.update(label="✅ Transcript saved", state="complete")
-                
-                # Step 5: Display transcript
-                st.success("✅ Transcription completed successfully!")
-                st.markdown("---")
-                st.markdown("#### Transcript")
-                st.text_area(
-                    "Transcribed Text",
-                    transcript_data["text"],
-                    height=300,
-                    key="transcript_output"
-                )
-                
-                # Display quality metrics
-                quality_metrics = transcript_validator.get_transcript_quality(transcript_data)
-                with st.expander("📊 Transcript Quality Metrics"):
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Word Count", quality_metrics["word_count"])
-                    with col2:
-                        st.metric("Character Count", quality_metrics["character_count"])
-                    with col3:
-                        st.metric("Duration (s)", f"{quality_metrics['duration']:.1f}")
-                    st.json(transcript_data)
-                
-                # Clean up temporary files
-                audio_processor.cleanup_temp_files()
-                
-            except FileNotFoundError as e:
-                st.error(f"❌ File not found: {str(e)}")
-            except RuntimeError as e:
-                st.error(f"❌ Processing error: {str(e)}")
-            except Exception as e:
-                st.error(f"❌ Error during transcription: {str(e)}")
-                st.exception(e)
-            finally:
-                # Clean up temporary files even if error occurs
-                if audio_processor:
-                    audio_processor.cleanup_temp_files()
-                # Clean up uploaded file
-                if upload_path.exists():
-                    upload_path.unlink()
-    
-    # List existing transcripts
-    st.markdown("---")
-    st.markdown("#### Saved Transcripts")
-    transcripts = transcript_manager.list_transcripts()
-    
-    if transcripts:
-        for transcript_path in transcripts:
-            with st.expander(f"📄 {transcript_path.name}"):
-                try:
-                    data = transcript_manager.load_transcript(str(transcript_path))
-                    st.text_area(
-                        "Transcript",
-                        data["transcript"]["text"],
-                        height=200,
-                        key=f"transcript_{transcript_path.name}"
-                    )
-                    st.caption(f"Original: {data['metadata']['original_filename']} | Timestamp: {data['metadata']['timestamp']}")
-                except Exception as e:
-                    st.error(f"Error loading transcript: {e}")
-    else:
-        st.info("No transcripts saved yet.")
+
+    # Sync navigation state
+    selected_page = option_to_page[selected_option]
+    if selected_page != st.session_state["nav_page"]:
+        st.session_state["nav_page"] = selected_page
+        st.rerun()
+
+    # Sidebar Quick Stats / Status
+    render_system_status(
+        ai_ready=ai_ready,
+        whisper_ready=True,
+        db_ready=db_manager is not None
+    )
+
+    # ----------------------------------------------------
+    # PAGE ROUTER
+    # ----------------------------------------------------
+    current_page = st.session_state["nav_page"]
+
+    if current_page == "Dashboard":
+        render_dashboard_view(
+            db_manager=db_manager,
+            transcript_manager=transcript_manager,
+            summary_manager=summary_manager
+        )
+
+    elif current_page == "Interview Analysis":
+        render_interview_analysis_view(
+            audio_processor=audio_processor,
+            transcriber=transcriber,
+            file_validator=file_validator,
+            transcript_validator=transcript_validator,
+            transcript_manager=transcript_manager,
+            meeting_summarizer=meeting_summarizer,
+            action_extractor=action_extractor,
+            participant_mapper=participant_mapper,
+            pipeline=pipeline,
+            db_manager=db_manager
+        )
+
+    elif current_page == "Transcript Workspace":
+        render_transcript_view(
+            transcript_manager=transcript_manager,
+            transcript_validator=transcript_validator,
+            meeting_summarizer=meeting_summarizer,
+            action_extractor=action_extractor,
+            participant_mapper=participant_mapper
+        )
+
+    elif current_page == "AI Insights":
+        render_ai_insights_view(
+            meeting_summarizer=meeting_summarizer,
+            summary_manager=summary_manager,
+            action_extractor=action_extractor,
+            participant_mapper=participant_mapper,
+            db_manager=db_manager
+        )
+
+    elif current_page == "Career Intelligence":
+        render_career_intelligence_view()
+
+    elif current_page == "Interview Preparation":
+        render_interview_prep_view()
+
+    elif current_page == "Database & Archive":
+        render_database_archive_view(
+            db_manager=db_manager,
+            summary_manager=summary_manager,
+            meeting_summarizer=meeting_summarizer
+        )
+
+    elif current_page == "Settings & Health":
+        render_settings_view(
+            llm_service=llm_service,
+            transcriber=transcriber,
+            db_manager=db_manager
+        )
+
+    # Global Footer
+    render_footer()
 
 
 if __name__ == "__main__":

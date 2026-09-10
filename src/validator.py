@@ -15,7 +15,7 @@ class FileValidator:
     AUDIO_FORMATS = {".mp3", ".wav", ".m4a"}
     
     # Supported video formats (Task 1 & Task 2 requirements)
-    VIDEO_FORMATS = {".mp4", ".webm"}
+    VIDEO_FORMATS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
     
     # Maximum file size (500 MB)
     MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB in bytes
@@ -28,7 +28,9 @@ class FileValidator:
         ".m4a": [b"ftypM4A", b"ftypmp42", b"ftypisom"],
         # Video formats (more lenient - various container formats)
         ".mp4": [b"ftypmp42", b"ftypisom", b"ftypMSNV", b"ftypM4V", b"ftyp3gp", b"ftyp3g2", b"ftypavc1", b"ftypdash"],
-        ".webm": [b"\x1a\x45\xdf\xa3"]  # EBML header
+        ".webm": [b"\x1a\x45\xdf\xa3"],  # EBML header
+        ".avi": [b"RIFF"],
+        ".mov": [b"moov", b"ftypqt  ", b"wide"]
     }
     
     def __init__(self, upload_dir="data/uploads"):
@@ -95,9 +97,8 @@ class FileValidator:
         Returns:
             Tuple of (is_valid, error_message)
         """
-        # Skip content validation for MP4 files due to container format variations
-        # Extension validation is sufficient for MP4
-        if extension == ".mp4":
+        # Skip content validation for container format variations
+        if extension in (".mp4", ".avi", ".mov", ".mkv"):
             return True, None
         
         if extension not in self.MAGIC_BYTES:
@@ -169,28 +170,24 @@ class TranscriptValidator:
         """
         # Check if transcript exists
         if not transcript_data:
-            return False, "No speech was detected in this recording."
+            return False, "No speech was detected in this recording. Transcript data is empty."
         
         # Check for text field
         if "text" not in transcript_data:
-            return False, "No speech was detected in this recording."
+            return False, "No speech was detected in this recording. Missing text field."
         
         # Check if text is not empty
-        text = transcript_data["text"].strip()
-        if not text:
-            return False, "No speech was detected in this recording."
-        
-        # Check if text is only whitespace
-        if not text.strip():
-            return False, "No speech was detected in this recording."
+        text = transcript_data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return False, "No speech was detected in this recording. Transcript text is empty."
         
         # Check for minimum length (at least 10 characters)
-        if len(text) < 10:
-            return False, "No speech was detected in this recording."
+        if len(text.strip()) < 10:
+            return False, "No speech was detected in this recording. Transcript text is too short."
         
         # Check for meaningful text (not just repeated characters or noise)
         if not TranscriptValidator._is_meaningful_text(text):
-            return False, "No speech was detected in this recording."
+            return False, "No speech was detected in this recording. Meaningful speech is missing."
         
         return True, None
     

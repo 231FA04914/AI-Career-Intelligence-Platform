@@ -1,0 +1,42 @@
+{
+  "summary_id": "9facba35-655b-446f-9685-20be9600c809",
+  "source_name": "meeting_transcript.txt",
+  "timestamp": "20260910_191036",
+  "created_at": "2026-09-10T19:10:36.040217",
+  "metadata": {},
+  "data": {
+    "summary": "Staff members met to address chronic student absenteeism, noting a pattern of Friday absences and cold-weather illnesses. They decided to try a pancake breakfast next week to boost Friday attendance and post sickness prevention posters. They also discussed middle schooler John Smith's attendance issues, agreeing to provide counseling support and research childcare resources for his family.",
+    "key_decisions": [
+      "Hold a pancake breakfast next week to encourage attendance on Fridays.",
+      "Put up posters with tips for preventing sickness."
+    ],
+    "action_items": [
+      {
+        "action": "Talk to John Smith in the office after he meets with his teacher",
+        "owner": "Guidance counselor",
+        "deadline": "today",
+        "priority": null
+      },
+      {
+        "action": "Look for free or low cost childcare resources in the community to share with John and his family",
+        "owner": null,
+        "deadline": null,
+        "priority": null
+      }
+    ],
+    "key_points": [
+      "High rates of student absences on Fridays.",
+      "Increase in student illness due to colder weather and flu season.",
+      "John Smith has missed seven days by November due to helping his parents with childcare."
+    ],
+    "participants": [
+      "John Smith",
+      "Guidance counselor"
+    ],
+    "deadlines": [
+      "next week",
+      "today"
+    ],
+    "priorities": []
+  }
+}
