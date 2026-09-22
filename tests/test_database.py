@@ -144,6 +144,50 @@ class TestDatabaseManagerTask5:
         assert len(self.db.get_all_action_items()) == 0
         print("✅ TEST 5 - Cascading delete meeting: PASSED")
 
+    def test_search_and_integrity_verification(self):
+        """Test database search methods across entities and integrity verification."""
+        m_id = self.db.save_meeting_intelligence(
+            title="Sprint Review",
+            transcript_text="Alice completed the payment API deployment. Bob needs to finish docs.",
+            summary_text="Sprint review covered payment API deployment and documentation.",
+            decisions=["Deploy payment service to staging."],
+            action_items=[
+                {"action": "Deploy payment service", "owner": "Alice", "deadline": "Friday", "priority": "High", "status": "Completed"},
+                {"action": "Write API docs", "owner": "Bob", "deadline": "Monday", "priority": "Medium", "status": "Pending"}
+            ],
+            participants=[
+                {"name": "Alice", "canonical_name": "Alice", "role": "Backend Lead"},
+                {"name": "Bob", "canonical_name": "Bob", "role": "Technical Writer"}
+            ],
+            original_filename="sprint_review.mp4"
+        )
+
+        # 1. Search metadata
+        assert len(self.db.search_meetings_raw("Sprint")) == 1
+        # 2. Search transcripts
+        assert len(self.db.search_transcripts_raw("payment API")) == 1
+        # 3. Search summaries
+        assert len(self.db.search_summaries_raw("documentation")) == 1
+        # 4. Search decisions
+        assert len(self.db.search_decisions_raw("staging")) == 1
+        # 5. Search action items
+        assert len(self.db.search_action_items_raw(query="docs")) == 1
+        # 6. Search participants
+        assert len(self.db.search_participants_raw("Alice")) == 1
+        # 7. Search deadlines
+        assert len(self.db.search_deadlines_raw("Friday")) == 1
+
+        # 8. Verify database integrity
+        audit = self.db.verify_database_integrity()
+        assert audit["is_healthy"] is True
+        assert audit["meeting_count"] == 1
+        assert audit["summary_count"] == 1
+        assert audit["decision_count"] == 1
+        assert audit["action_count"] == 2
+        assert audit["participant_count"] == 2
+        assert audit["orphans"]["summaries"] == 0
+        print("✅ TEST 6 - Database search and integrity verification: PASSED")
+
 
 def run_all_tests():
     """Run all Task 5 database tests."""

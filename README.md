@@ -198,13 +198,126 @@ pytest tests/ --cov=src
   - Real-time progress tracking across all pipeline stages
   - One-click full pipeline execution in the Streamlit UI
 
-## Future Modules
+### Milestone 3: Knowledge Repository & AI Search
+- ✅ **Task 1: Meeting Knowledge Repository**
+  - Central Meeting Knowledge Repository service (`src/repository.py`)
+  - Multi-entity storage and search across **7 core dimensions**:
+    1. **Meeting metadata** (id, title, duration, created_at, source filename)
+    2. **Transcripts** (full text and context snippet extraction)
+    3. **Executive summaries** (discussion points and takeaways)
+    4. **Decisions** (formal organizational choices)
+    5. **Action items** (tasks, assignees, priorities, statuses)
+    6. **Participants** (attendee names, canonical aliases, roles)
+    7. **Deadlines** (deliverable timelines, upcoming and overdue)
+  - Unified multi-entity search engine (`search_all`) with faceted filters
+  - AI-Powered Natural Language Search & Q&A (`ai_search`) with direct meeting citations
+  - Interconnected Meeting Knowledge Graph explorer
+  - Complete relational database integrity and record linkage verification audit tool
+  - Dedicated Streamlit UI view (`🔍 Knowledge Repository`)
+- ✅ **Task 2: Embedding Generation**
+  - Dense Vector Embedding Engine (`src/embeddings.py`)
+  - Dynamic generation across **4 core entity types**:
+    1. **Transcript sections** (intelligent sliding-window chunking & vector indexing)
+    2. **Summaries** (conceptual & thematic embeddings)
+    3. **Decisions** (organizational choice vectors)
+    4. **Action items** (enriched with task, assignee, priority, and deadline context)
+  - Dual-engine architecture: Google Gemini API embeddings (`text-embedding-004`) + normalized dense vector fallback
+  - SQLite persistence layer with relational linkage and cascading delete (`src/database.py`)
+  - Semantic Vector Search with cosine similarity scoring & dynamic threshold filtering
+  - Seamless pipeline auto-embedding on media ingestion (`src/pipeline.py`)
+  - Interactive Semantic Search & Embeddings Inspector UI in Streamlit
+- ✅ **Task 3: Vector Database Integration**
+  - Dedicated Vector Database Engine & Store (`src/vector_db.py`)
+  - Full CRUD lifecycle:
+    - **Insert embeddings** (single and batch insertion with rich metadata payloads)
+    - **Update embeddings** (dynamic vector arrays, text contents, and metadata updates)
+    - **Delete embeddings** (by vector ID, entity ID, or cascading meeting ID)
+  - Multi-attribute metadata filtering (`entity_type`, `meeting_id`, `owner`, `priority`, `status`)
+  - Cosine similarity nearest-neighbor search with score thresholds
+  - Bidirectional **Meeting-to-Vector Mapping** & **Vector-to-Meeting Reverse Tracer**
+- ✅ **Task 4: Semantic Search Engine**
+  - Dedicated natural-language semantic search engine (`src/semantic_search.py`)
+  - User Query -> Dense Embedding -> Vector Search -> Relevant Meetings -> Direct Answer
+  - Strict sub-3-second latency SLA (< 3000ms) with execution timing verification
+  - Accurate relevance ranking, confidence percentage, and snippet extraction
+- ✅ **Task 5: Traceability & Vector Maintenance**
+  - Full vector lifecycle management, automated maintenance, and index sync
+- ✅ **Task 6: Advanced REST API Layer**
+  - FastAPI REST gateway (`src/api.py`) exposing standardized endpoints:
+    - `GET /health` - System health, database connectivity & vector stats
+    - `GET /meetings` - List historical meetings with pagination, date & text filtering
+    - `GET /meetings/{id}` - Complete meeting detail retrieval (transcript, summary, action items, participants)
+    - `POST /search` - High-performance semantic vector search with sub-3s SLA and snippet highlights
+    - `POST /ask` - Grounded RAG Question-Answering with explicit meeting citations
+  - Authentication: `X-API-Key` header & `Bearer <token>` authentication with `.env` configuration
+  - Standardized JSON error envelopes (400, 401, 404, 422, 500, 504) and request timing middleware
+- ✅ **Task 7: Search & RAG Validation**
+  - Comprehensive automated test suite (`tests/test_search_rag_validation.py`)
+  - Verified exact & fuzzy retrieval, irrelevant query handling, multi-meeting ranking, date/metadata filtering, source attribution, and grounded Q&A
+- ✅ **Task 8: Performance & Edge Case Resilience**
+  - Stress test suite (`tests/test_performance_edge_cases.py`)
+  - Validated large transcripts (10,000+ words), 25+ historical meetings, long/short/unknown queries, duplicate data, missing embeddings, and graceful LLM/DB fallbacks
+- ✅ **Task 9: End-to-End Integration**
+  - Full automated integration suite (`tests/test_e2e_integration.py`) verifying ingestion -> database -> vector store -> authenticated API retrieval
+- ✅ **Task 10: Project Cleanup & Final Validation**
+  - Modernized Pydantic v2 schemas (`@field_validator`, `ConfigDict`, `model_dump`)
+  - 100% regression test coverage across all test suites
 
-- Career analysis
-- Interview preparation
-- Resume parsing
-- Skill assessment
-- Job matching
+## REST API Documentation
+
+### Start the REST API Server
+```powershell
+uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
+```
+Interactive documentation: `http://localhost:8000/docs` (Swagger) and `http://localhost:8000/redoc`.
+
+### Authentication
+Include `X-API-Key` in your HTTP headers:
+```bash
+curl -H "X-API-Key: career-intel-dev-key-2026" http://localhost:8000/meetings
+```
+
+### Key Endpoints
+
+#### 1. List Meetings
+```bash
+GET /meetings?date_from=2026-08-01&date_to=2026-09-30&search=DevOps
+```
+
+#### 2. Get Meeting Intelligence Details
+```bash
+GET /meetings/{meeting_id}
+```
+
+#### 3. Semantic Search
+```bash
+POST /search
+Content-Type: application/json
+X-API-Key: career-intel-dev-key-2026
+
+{
+  "query": "Kubernetes migration and cloud infrastructure deliverables",
+  "top_k": 5,
+  "min_score": 0.1
+}
+```
+
+#### 4. Grounded RAG Question Answering
+```bash
+POST /ask
+Content-Type: application/json
+X-API-Key: career-intel-dev-key-2026
+
+{
+  "question": "What tasks were assigned to Ravi and when is the deadline?",
+  "max_context_meetings": 5
+}
+```
+
+## Running the Complete Test Suite
+```powershell
+pytest tests/
+```
 
 ## License
 

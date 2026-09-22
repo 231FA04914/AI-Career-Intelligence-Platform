@@ -10,7 +10,9 @@ from src.llm.exceptions import (
     OutputValidationError,
     APIError,
     RateLimitError,
-    AuthenticationError
+    AuthenticationError,
+    RetryLimitExceededError,
+    ServiceUnavailableError
 )
 
 __all__ = [
@@ -20,5 +22,8 @@ __all__ = [
     'OutputValidationError',
     'APIError',
     'RateLimitError',
-    'AuthenticationError'
+    'AuthenticationError',
+    'RetryLimitExceededError',
+    'ServiceUnavailableError'
 ]
+

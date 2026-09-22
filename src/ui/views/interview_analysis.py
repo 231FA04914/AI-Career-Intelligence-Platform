@@ -6,7 +6,13 @@ Supports Audio/Video recording upload with Whisper, direct transcript input, and
 import streamlit as st
 from pathlib import Path
 from src.ui.components import render_header, render_step_indicator, render_empty_state
-from src.llm import InputValidationError, LLMServiceError
+from src.llm import (
+    InputValidationError,
+    LLMServiceError,
+    ServiceUnavailableError,
+    RateLimitError,
+    AuthenticationError
+)
 
 
 def render_interview_analysis_view(
@@ -125,9 +131,25 @@ def render_interview_analysis_view(
                             st.success(f"✅ Successfully processed meeting `{pipeline_result['title']}` (ID: `{pipeline_result['meeting_id']}`)")
                             st.session_state["nav_page"] = "AI Insights"
                             st.rerun()
+                    except ServiceUnavailableError as e:
+                        if getattr(pipeline, "last_transcript_text", None):
+                            st.session_state["active_transcript"] = pipeline.last_transcript_text
+                            st.session_state["active_source_name"] = uploaded_file.name
+                        st.warning("⚠️ **AI Service High Demand (503 UNAVAILABLE)**: The Google Gemini model is experiencing a temporary spike in traffic. Your audio transcript has been safely saved.")
+                        st.info("💡 Click **🔄 Try AI Analysis Again** below to run AI insights directly on the saved transcript without re-transcribing the audio.")
+                    except RateLimitError as e:
+                        if getattr(pipeline, "last_transcript_text", None):
+                            st.session_state["active_transcript"] = pipeline.last_transcript_text
+                            st.session_state["active_source_name"] = uploaded_file.name
+                        st.warning("⚠️ **Rate Limit Reached (429)**: Gemini free tier rate limit was reached. Please wait 15–30 seconds and click **Try AI Analysis Again**.")
+                    except AuthenticationError as e:
+                        st.error("❌ **Authentication Failed**: Invalid or missing Gemini API key. Please check LLM_API_KEY in your `.env` file.")
                     except Exception as e:
                         st.error(f"❌ Pipeline failed: {str(e)}")
-                        st.exception(e)
+                        if getattr(pipeline, "last_transcript_text", None):
+                            st.session_state["active_transcript"] = pipeline.last_transcript_text
+                            st.session_state["active_source_name"] = uploaded_file.name
+
 
                 # Action 2: Transcribe Only execution
                 if run_transcribe_only:
@@ -173,6 +195,36 @@ def render_interview_analysis_view(
                             audio_processor.cleanup_temp_files()
                         if upload_path.exists():
                             upload_path.unlink()
+
+        # Dedicated retry button if transcript exists in session state but summary not yet generated
+        if st.session_state.get("active_transcript") and not st.session_state.get("latest_summary"):
+            st.markdown("---")
+            st.markdown("##### 🔄 Saved Transcript in Workspace")
+            st.info("A transcript is available in your workspace. You can re-run AI intelligence extraction without re-uploading or re-transcribing.")
+            if st.button("🔄 Try AI Analysis Again (Process Saved Transcript)", type="primary", key="retry_analysis_btn", use_container_width=True):
+                try:
+                    with st.status("🧠 Processing AI Intelligence...", expanded=True) as status:
+                        p_res = pipeline.process_transcript_text(
+                            transcript_text=st.session_state["active_transcript"],
+                            meeting_title=st.session_state.get("active_source_name", "Meeting").rsplit('.', 1)[0].replace('_', ' ').title()
+                        )
+                        status.update(label="✅ AI Intelligence Generated!", state="complete")
+                        st.session_state["latest_summary"] = {
+                            "summary": p_res["summary"],
+                            "key_decisions": p_res["decisions"],
+                            "action_items": p_res["action_items"]
+                        }
+                        st.session_state["extracted_actions_list"] = p_res["action_items"]
+                        st.session_state["mapped_participants_list"] = p_res["participants"]
+                        st.success(f"✅ Successfully processed meeting `{p_res['title']}`")
+                        st.session_state["nav_page"] = "AI Insights"
+                        st.rerun()
+                except ServiceUnavailableError as retry_e:
+                    st.warning("⚠️ **Gemini 503 (High Demand)**: The model is still experiencing peak demand. Please wait a moment and click Try Again.")
+                except RateLimitError as retry_e:
+                    st.warning("⚠️ **Rate Limit Reached (429)**: Please wait 15–30 seconds and click Try Again.")
+                except Exception as retry_e:
+                    st.error(f"❌ Analysis failed: {retry_e}")
 
     # ----------------------------------------------------
     # TAB 2: Direct Text / Transcript Input
@@ -252,13 +304,15 @@ def render_interview_analysis_view(
 
                 except InputValidationError as e:
                     st.error(f"❌ Input Validation Error: {str(e)}")
+                except ServiceUnavailableError as e:
+                    st.warning("⚠️ **AI Service High Demand (503 UNAVAILABLE)**: The Google Gemini model is experiencing a temporary demand spike. Please wait a few seconds and click **Analyze with AI** again.")
+                except RateLimitError as e:
+                    st.warning("⚠️ **Gemini API Rate Limit (429)**: Rate limit reached. Please wait 15–30 seconds and click **Analyze with AI** again.")
+                except AuthenticationError as e:
+                    st.error("❌ **Authentication Error**: Please check your Gemini API key configuration.")
                 except Exception as e:
-                    err_msg = str(e)
-                    if "rate limit" in err_msg.lower() or "quota" in err_msg.lower():
-                        st.error("⚠️ **Gemini API Rate Limit / Quota Reached**: Google Gemini free tier allows a limited number of requests per minute. Please wait 15–30 seconds and click **Analyze with AI** again.")
-                    else:
-                        st.error(f"❌ AI Service Error: {err_msg}")
-                    st.error(f"❌ Unexpected Error: {str(e)}")
+                    st.error(f"❌ AI Service Error: {str(e)}")
+
 
     # ----------------------------------------------------
     # TAB 3: Load Saved Transcripts

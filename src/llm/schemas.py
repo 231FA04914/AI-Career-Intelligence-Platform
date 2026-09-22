@@ -3,7 +3,7 @@ Pydantic schemas for LLM input/output validation.
 """
 
 from typing import List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class ActionItem(BaseModel):
@@ -14,7 +14,8 @@ class ActionItem(BaseModel):
     priority: Optional[str] = Field(None, description="Priority level: High, Medium, or Low")
     status: Optional[str] = Field("Pending", description="Status of the task: Pending, In Progress, Completed, Blocked")
     
-    @validator('priority', pre=True)
+    @field_validator('priority', mode='before')
+    @classmethod
     def validate_priority(cls, v):
         """Validate and normalize priority value."""
         if not v or v in ["null", "None", ""]:
@@ -30,7 +31,8 @@ class ActionItem(BaseModel):
             return 'Low'
         return None
 
-    @validator('status', pre=True)
+    @field_validator('status', mode='before')
+    @classmethod
     def validate_status(cls, v):
         """Validate and normalize status value."""
         if not v or v in ["null", "None", ""]:
@@ -52,7 +54,8 @@ class PriorityItem(BaseModel):
     item: str = Field(..., description="The item or topic")
     priority: str = Field("Medium", description="Priority level: High, Medium, or Low")
     
-    @validator('priority', pre=True)
+    @field_validator('priority', mode='before')
+    @classmethod
     def validate_priority(cls, v):
         """Validate and normalize priority value."""
         if not v or v in ["null", "None", ""]:
@@ -79,9 +82,8 @@ class MeetingIntelligence(BaseModel):
     deadlines: List[str] = Field(default_factory=list, description="Deadlines or dates mentioned")
     priorities: List[PriorityItem] = Field(default_factory=list, description="Prioritized items")
     
-    class Config:
-        """Pydantic configuration."""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "summary": "Candidate is a final-year Computer Science student interested in backend development.",
                 "key_points": [
@@ -115,3 +117,4 @@ class MeetingIntelligence(BaseModel):
                 ]
             }
         }
+    )

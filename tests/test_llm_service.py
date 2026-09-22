@@ -13,8 +13,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.llm.service import LLMService
 from src.llm.validators import InputValidator, OutputValidator
-from src.llm.exceptions import InputValidationError, OutputValidationError, AuthenticationError
+from src.llm.exceptions import (
+    InputValidationError,
+    OutputValidationError,
+    AuthenticationError,
+    ServiceUnavailableError,
+    RateLimitError,
+    RetryLimitExceededError
+)
 from src.llm.schemas import MeetingIntelligence
+
 
 
 class TestInputValidation:
@@ -230,12 +238,105 @@ class TestLLMService:
     
     @patch.dict('os.environ', {'LLM_API_KEY': 'test_key'})
     def test_retry_on_temporary_failure(self):
-        """Test retry logic on temporary API failure."""
-        # Test that retry mechanism exists and can handle errors
-        service = LLMService()
-        assert service.max_retries == 3, "Default max_retries should be 3"
-        assert service.retry_delay == 1.0, "Default retry_delay should be 1.0"
+        """Test retry configuration."""
+        service = LLMService(max_retries=3, retry_delay=1.0)
+        assert service.max_retries == 3
+        assert service.retry_delay == 1.0
         print("✅ TEST 17 - Retry configuration: PASSED")
+
+    @patch.dict('os.environ', {'LLM_API_KEY': 'test_key'})
+    def test_exponential_backoff_calculation(self):
+        """Test backoff calculation with exponential delay and random jitter."""
+        service = LLMService(initial_retry_delay=2.0, max_retry_delay=30.0)
+        # Attempt 0: 2 * (2^0) = 2.0 + jitter [0.1, 1.0] -> [2.1, 3.0]
+        delay0 = service._calculate_retry_delay(0)
+        assert 2.0 <= delay0 <= 3.1, f"Expected delay between 2.0 and 3.1, got {delay0}"
+
+        # Attempt 1: 2 * (2^1) = 4.0 + jitter [0.1, 1.0] -> [4.1, 5.0]
+        delay1 = service._calculate_retry_delay(1)
+        assert 4.0 <= delay1 <= 5.1, f"Expected delay between 4.0 and 5.1, got {delay1}"
+
+        # Attempt 5: 2 * 32 = 64 > max_delay 30.0 -> [30.1, 31.0]
+        delay5 = service._calculate_retry_delay(5)
+        assert 30.0 <= delay5 <= 31.1, f"Expected capped delay between 30.0 and 31.1, got {delay5}"
+        print("✅ TEST 18 - Exponential backoff calculation with jitter: PASSED")
+
+    def test_retryable_error_classification(self):
+        """Test HTTP status code and exception classification for retries."""
+        # Retryable HTTP status codes
+        for code in [429, 500, 502, 503, 504]:
+            assert LLMService.is_retryable_status_code(code) is True, f"Status code {code} should be retryable"
+
+        # Non-retryable HTTP status codes
+        for code in [400, 401, 403, 404, 200]:
+            assert LLMService.is_retryable_status_code(code) is False, f"Status code {code} should not be retryable"
+
+        # Retryable exceptions
+        assert LLMService.is_retryable_exception(ServiceUnavailableError("503 unavailable")) is True
+        assert LLMService.is_retryable_exception(RateLimitError("429 rate limit")) is True
+        assert LLMService.is_retryable_exception(Exception("Connection timeout")) is True
+
+        # Non-retryable exceptions
+        assert LLMService.is_retryable_exception(AuthenticationError("401 unauthorized")) is False
+        print("✅ TEST 19 - Retryable error classification: PASSED")
+
+    @patch.dict('os.environ', {'LLM_API_KEY': 'test_key'})
+    def test_authentication_error_fails_immediately(self):
+        """Test that authentication error is never retried."""
+        call_count = 0
+
+        def mock_call_gemini_model(prompt, model_name):
+            nonlocal call_count
+            call_count += 1
+            raise AuthenticationError("Invalid API key")
+
+        service = LLMService(max_retries=4)
+        service._call_gemini_model = mock_call_gemini_model
+
+        try:
+            service._call_llm_with_retry("test prompt")
+            assert False, "Should have raised AuthenticationError"
+        except AuthenticationError:
+            # Should have called only once and aborted immediately
+            assert call_count == 1, f"Expected exactly 1 call without retries, got {call_count}"
+            print("✅ TEST 20 - Authentication error fails immediately without retrying: PASSED")
+
+    @patch.dict('os.environ', {'LLM_API_KEY': 'test_key'})
+    def test_fallback_model_used_on_primary_failure(self):
+        """Test fallback model is attempted when primary model returns 503."""
+        called_models = []
+
+        def mock_call_gemini_model(prompt, model_name):
+            called_models.append(model_name)
+            if model_name == "primary-model":
+                raise ServiceUnavailableError("503 high demand on primary")
+            return json.dumps({"summary": "Fallback success", "key_points": [], "decisions": [], "action_items": [], "participants": [], "deadlines": [], "priorities": []})
+
+        service = LLMService(model="primary-model", fallback_model="fallback-model", max_retries=1)
+        service._call_gemini_model = mock_call_gemini_model
+
+        result = service._call_llm_with_retry("test prompt")
+        assert "Fallback success" in result
+        assert "primary-model" in called_models
+        assert "fallback-model" in called_models
+        print("✅ TEST 21 - Fallback model succession on 503: PASSED")
+
+    @patch.dict('os.environ', {'LLM_API_KEY': 'test_key'})
+    def test_service_unavailable_error_on_exhaustion(self):
+        """Test ServiceUnavailableError raised cleanly when all retries are exhausted."""
+        def mock_call_gemini_model(prompt, model_name):
+            raise ServiceUnavailableError("503 high demand")
+
+        service = LLMService(max_retries=2, initial_retry_delay=0.01, max_retry_delay=0.02)
+        service._call_gemini_model = mock_call_gemini_model
+
+        try:
+            service._call_llm_with_retry("test prompt")
+            assert False, "Should have raised ServiceUnavailableError"
+        except ServiceUnavailableError as e:
+            assert "503" in str(e) or "temporarily unavailable" in str(e)
+            print("✅ TEST 22 - ServiceUnavailableError raised cleanly on exhaustion: PASSED")
+
 
 
 class TestExistingTranscriptIntegration:
@@ -314,12 +415,18 @@ def run_all_tests():
     llm_tests.test_process_transcript_with_mock()
     llm_tests.test_long_transcript_chunking()
     llm_tests.test_retry_on_temporary_failure()
+    llm_tests.test_exponential_backoff_calculation()
+    llm_tests.test_retryable_error_classification()
+    llm_tests.test_authentication_error_fails_immediately()
+    llm_tests.test_fallback_model_used_on_primary_failure()
+    llm_tests.test_service_unavailable_error_on_exhaustion()
     
     print()
     
     # Integration tests
     integration_tests = TestExistingTranscriptIntegration()
     integration_tests.test_whisper_transcript_processing()
+
     
     print()
     print("=" * 60)

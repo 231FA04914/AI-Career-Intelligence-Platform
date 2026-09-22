@@ -87,15 +87,12 @@ class ActionItemExtractor:
 
         # Format prompt specifically for action items
         prompt = PromptTemplates.get_action_item_extraction_prompt().format(transcript=transcript)
-        raw_response = self.llm_service._call_llm_with_retry(prompt)
-
-        # Parse and extract
-        cleaned_json = OutputValidator.clean_json_string(raw_response)
         try:
+            raw_response = self.llm_service._call_llm_with_retry(prompt)
+            cleaned_json = OutputValidator.clean_json_string(raw_response)
             parsed_data = json.loads(cleaned_json)
-        except json.JSONDecodeError:
-            # Fallback to general intelligence pipeline if single extraction json was partial
-            logger.warning("Dedicated extraction returned non-standard JSON, falling back to general intelligence parser")
+        except Exception as e:
+            logger.warning(f"Dedicated extraction returned non-standard response ({e}), falling back to intelligence parser")
             general_res = self.llm_service.process_transcript(transcript)
             parsed_data = {"action_items": general_res.get("action_items", [])}
 

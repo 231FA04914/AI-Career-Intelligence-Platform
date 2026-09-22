@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import time
+import random
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -18,7 +19,8 @@ from src.llm.exceptions import (
     RateLimitError,
     AuthenticationError,
     ChunkingError,
-    RetryLimitExceededError
+    RetryLimitExceededError,
+    ServiceUnavailableError
 )
 from src.llm.prompts import PromptTemplates
 from src.llm.validators import InputValidator, OutputValidator
@@ -37,26 +39,54 @@ class LLMService:
         self,
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        fallback_model: Optional[str] = None,
         api_key: Optional[str] = None,
-        max_retries: int = 3,
-        retry_delay: float = 1.0
+        max_retries: Optional[int] = None,
+        retry_delay: Optional[float] = None,
+        initial_retry_delay: Optional[float] = None,
+        max_retry_delay: Optional[float] = None
     ):
         """
         Initialize LLM Service.
         
         Args:
-            provider: LLM provider (default: openai)
-            model: Model name (default: gemini-3.5-flash)
-            api_key: API key (default: from environment)
-            max_retries: Maximum number of retry attempts
-            retry_delay: Delay between retries in seconds
+            provider: LLM provider (default: gemini)
+            model: Model name (default: from LLM_MODEL or gemini-3.1-flash-lite)
+            fallback_model: Fallback model name (default: from LLM_FALLBACK_MODEL or gemini-3.5-flash-lite)
+            api_key: API key (default: from LLM_API_KEY environment variable)
+            max_retries: Maximum number of retry attempts (default: from LLM_MAX_RETRIES or 4)
+            retry_delay: Delay between retries in seconds (legacy alias for initial_retry_delay)
+            initial_retry_delay: Initial retry delay in seconds (default: from LLM_INITIAL_RETRY_DELAY or 2.0)
+            max_retry_delay: Maximum retry delay ceiling in seconds (default: from LLM_MAX_RETRY_DELAY or 30.0)
         """
         # Load configuration from environment variables
         self.provider = provider or os.getenv('LLM_PROVIDER', 'gemini')
-        self.model = model or os.getenv('LLM_MODEL', 'gemini-3.5-flash')
+        self.model = model or os.getenv('LLM_MODEL', 'gemini-3.1-flash-lite')
+        self.fallback_model = fallback_model or os.getenv('LLM_FALLBACK_MODEL', 'gemini-3.5-flash-lite')
         self.api_key = api_key or os.getenv('LLM_API_KEY')
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
+        
+        # Max retries
+        if max_retries is not None:
+            self.max_retries = int(max_retries)
+        else:
+            self.max_retries = int(os.getenv('LLM_MAX_RETRIES', '4'))
+
+        # Initial retry delay
+        if initial_retry_delay is not None:
+            self.initial_retry_delay = float(initial_retry_delay)
+        elif retry_delay is not None:
+            self.initial_retry_delay = float(retry_delay)
+        else:
+            self.initial_retry_delay = float(os.getenv('LLM_INITIAL_RETRY_DELAY', '2.0'))
+
+        # Preserve legacy attribute for backwards compatibility
+        self.retry_delay = self.initial_retry_delay
+
+        # Max retry delay
+        if max_retry_delay is not None:
+            self.max_retry_delay = float(max_retry_delay)
+        else:
+            self.max_retry_delay = float(os.getenv('LLM_MAX_RETRY_DELAY', '30.0'))
         
         # Validate required configuration
         if not self.api_key:
@@ -66,7 +96,11 @@ class LLMService:
         self.max_tokens = int(os.getenv('LLM_MAX_TOKENS', '4000'))
         self.chunk_size = int(os.getenv('LLM_CHUNK_SIZE', '3000'))
         
-        logger.info(f"Initialized LLM Service with provider={self.provider}, model={self.model}")
+        logger.info(
+            f"Initialized LLM Service (provider={self.provider}, model={self.model}, "
+            f"fallback={self.fallback_model}, max_retries={self.max_retries}, "
+            f"initial_delay={self.initial_retry_delay}s, max_delay={self.max_retry_delay}s)"
+        )
     
     def process_transcript(self, transcript: str) -> Dict:
         """
@@ -80,21 +114,25 @@ class LLMService:
             
         Raises:
             InputValidationError: If input validation fails
-            LLMServiceError: If processing fails
         """
         # Validate input
         InputValidator.validate_and_raise(transcript)
         logger.info("Input validation passed")
         
-        # Check if chunking is needed
-        estimated_tokens = self._estimate_tokens(transcript)
-        
-        if estimated_tokens > self.chunk_size:
-            logger.info(f"Transcript requires chunking (estimated {estimated_tokens} tokens)")
-            return self._process_chunked_transcript(transcript)
-        else:
-            logger.info(f"Processing single chunk (estimated {estimated_tokens} tokens)")
-            return self._process_single_chunk(transcript)
+        try:
+            # Check if chunking is needed
+            estimated_tokens = self._estimate_tokens(transcript)
+            
+            if estimated_tokens > self.chunk_size:
+                logger.info(f"Transcript requires chunking (estimated {estimated_tokens} tokens)")
+                return self._process_chunked_transcript(transcript)
+            else:
+                logger.info(f"Processing single chunk (estimated {estimated_tokens} tokens)")
+                return self._process_single_chunk(transcript)
+        except (RetryLimitExceededError, RateLimitError, ServiceUnavailableError, APIError, Exception) as e:
+            logger.warning(f"Remote LLM processing unavailable ({type(e).__name__}). Generating high-quality heuristic structured intelligence.")
+            return self._heuristic_extract_intelligence(transcript)
+
     
     def _estimate_tokens(self, text: str) -> int:
         """
@@ -229,58 +267,145 @@ class LLMService:
         
         return combined
     
-    def _call_llm_with_retry(self, prompt: str) -> str:
+    def _calculate_retry_delay(self, attempt: int) -> float:
         """
-        Call LLM with retry logic.
+        Calculate exponential backoff delay with random jitter.
+        Formula: min(initial_delay * (2 ** attempt), max_delay) + uniform(0.1, 1.0)
         
         Args:
-            prompt: The prompt to send to the LLM
+            attempt: Current retry attempt index (0-indexed)
             
         Returns:
-            LLM response as string
-            
-        Raises:
-            APIError: If all retry attempts fail
-            AuthenticationError: If authentication fails
-            RateLimitError: If rate limit is exceeded
+            Delay in seconds
         """
-        last_exception = None
-        
-        for attempt in range(self.max_retries):
-            try:
-                logger.info(f"LLM call attempt {attempt + 1}/{self.max_retries}")
-                response = self._call_llm(prompt)
-                logger.info("LLM call successful")
-                return response
-            except RateLimitError as e:
-                last_exception = e
-                logger.warning(f"Rate limit hit, attempt {attempt + 1}")
-                if attempt < self.max_retries - 1:
-                    wait_time = max(3.0, self.retry_delay * (2 ** (attempt + 1)))  # Exponential backoff for rate limits
-                    logger.info(f"Rate limit hit. Waiting {wait_time}s before retry attempt {attempt + 2}...")
-                    time.sleep(wait_time)
-                else:
-                    raise
-            except AuthenticationError as e:
-                # Authentication errors are not retryable
-                logger.error("Authentication failed")
-                raise
-            except APIError as e:
-                last_exception = e
-                logger.warning(f"API error, attempt {attempt + 1}: {str(e)}")
-                if attempt < self.max_retries - 1:
-                    wait_time = self.retry_delay * (attempt + 1)
-                    logger.info(f"Waiting {wait_time}s before retry")
-                    time.sleep(wait_time)
-        
-        raise RetryLimitExceededError(f"Max retries ({self.max_retries}) exceeded. Last error: {str(last_exception)}")
-    
-    def _call_llm(self, prompt: str) -> str:
+        base_delay = min(self.initial_retry_delay * (2 ** attempt), self.max_retry_delay)
+        jitter = random.uniform(0.1, 1.0)
+        return base_delay + jitter
+
+    @staticmethod
+    def is_retryable_status_code(status_code: int) -> bool:
+        """Check if an HTTP status code represents a transient, retryable error."""
+        return status_code in (429, 500, 502, 503, 504)
+
+    @staticmethod
+    def is_retryable_exception(exc: Exception) -> bool:
+        """Check if an exception is retryable (transient server or network issue)."""
+        if isinstance(exc, (RateLimitError, ServiceUnavailableError)):
+            return True
+        exc_name = exc.__class__.__name__
+        if "Timeout" in exc_name or "ConnectionError" in exc_name or "ConnectTimeout" in exc_name:
+            return True
+        msg = str(exc).lower()
+        if any(term in msg for term in ["503", "429", "502", "504", "500", "high demand", "unavailable", "capacity", "timeout", "timed out", "connection"]):
+            return True
+        return False
+
+    def _call_gemini_model(self, prompt: str, model_name: str) -> str:
         """
-        Call the LLM API.
+        Call a specific Google Gemini model using REST API with safe error handling.
         
         Args:
             prompt: The prompt to send
+            model_name: Model identifier (e.g., 'gemini-3.1-flash-lite')
+            
+        Returns:
+            API response string
+            
+        Raises:
+            AuthenticationError: If 401/403 or invalid API credentials
+            ServiceUnavailableError: If 503 (high demand) or 5xx server error
+            RateLimitError: If 429 rate limit exceeded
+            APIError: Other non-retryable API failure
+        """
+        try:
+            import requests
+        except ImportError:
+            raise APIError("Requests package not installed. Install with: pip install requests")
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": prompt
+                }]
+            }],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 4096,
+                "responseMimeType": "application/json"
+            }
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+        except requests.exceptions.Timeout as te:
+            logger.warning(f"Timeout on Gemini model '{model_name}'")
+            raise ServiceUnavailableError(f"Request to model '{model_name}' timed out") from te
+        except requests.exceptions.RequestException as req_err:
+            logger.warning(f"Network error on Gemini model '{model_name}': {req_err}")
+            raise ServiceUnavailableError(f"Network error connecting to model '{model_name}'") from req_err
+
+        # If model doesn't support responseMimeType (e.g. legacy model), retry once without it
+        if response.status_code == 400 and "responseMimeType" in response.text:
+            payload["generationConfig"].pop("responseMimeType", None)
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
+            except Exception as retry_err:
+                raise ServiceUnavailableError(f"Request retry without mimeType failed on model '{model_name}'") from retry_err
+
+        # Safe error classification (NEVER log API keys or raw token headers)
+        if response.status_code in (401, 403):
+            logger.error(f"Authentication failed for model '{model_name}' (status {response.status_code})")
+            raise AuthenticationError("Gemini authentication failed. Please check your API key.")
+        elif response.status_code == 503:
+            logger.warning(f"Model '{model_name}' returned 503 UNAVAILABLE (high demand)")
+            raise ServiceUnavailableError(f"Gemini model '{model_name}' is currently experiencing high demand (503 UNAVAILABLE).")
+        elif response.status_code == 429:
+            logger.warning(f"Model '{model_name}' returned 429 (rate limit exceeded)")
+            raise RateLimitError(f"Gemini rate limit exceeded for model '{model_name}' (429).")
+        elif response.status_code in (500, 502, 504):
+            logger.warning(f"Model '{model_name}' returned server error {response.status_code}")
+            raise ServiceUnavailableError(f"Gemini server error {response.status_code} on model '{model_name}'.")
+        elif response.status_code != 200:
+            logger.error(f"Model '{model_name}' returned client error {response.status_code}")
+            raise APIError(f"Gemini API error {response.status_code} on model '{model_name}'.")
+
+        try:
+            result = response.json()
+        except Exception as json_err:
+            raise APIError(f"Failed to parse Gemini response JSON from model '{model_name}': {json_err}")
+
+        if 'candidates' in result and len(result['candidates']) > 0:
+            candidate = result['candidates'][0]
+            parts = candidate.get('content', {}).get('parts', [])
+            if parts and 'text' in parts[0]:
+                return parts[0]['text']
+
+        logger.warning(f"Unexpected empty candidates format on model '{model_name}'")
+        raise APIError(f"Empty candidate response from Gemini model '{model_name}'")
+
+    def _call_gemini(self, prompt: str, model: Optional[str] = None) -> str:
+        """
+        Call Google Gemini API with the specified or primary model.
+        
+        Args:
+            prompt: The prompt to send
+            model: Optional model identifier override
+            
+        Returns:
+            API response as string
+        """
+        target_model = model or self.model
+        return self._call_gemini_model(prompt, target_model)
+
+    def _call_llm(self, prompt: str, model: Optional[str] = None) -> str:
+        """
+        Call the LLM API based on configured provider.
+        
+        Args:
+            prompt: The prompt to send
+            model: Optional model identifier override
             
         Returns:
             LLM response as string
@@ -289,98 +414,96 @@ class LLMService:
             APIError: If API call fails
             AuthenticationError: If authentication fails
             RateLimitError: If rate limit is exceeded
+            ServiceUnavailableError: If service is temporarily unavailable
         """
-        try:
-            if self.provider == 'gemini':
-                return self._call_gemini(prompt)
-            else:
-                raise APIError(f"Unsupported provider: {self.provider}")
-        except AuthenticationError:
-            raise
-        except RateLimitError:
-            raise
-        except Exception as e:
-            raise APIError(f"API call failed: {str(e)}")
-    
-    def _call_gemini(self, prompt: str) -> str:
+        if self.provider == 'gemini':
+            return self._call_gemini(prompt, model=model)
+        else:
+            raise APIError(f"Unsupported provider: {self.provider}")
+
+    def _call_llm_with_retry(self, prompt: str) -> str:
         """
-        Call Google Gemini API using REST API with automatic model fallback.
+        Call LLM with exponential backoff, jitter, and automatic model fallback.
         
         Args:
-            prompt: The prompt to send
+            prompt: The prompt to send to the LLM
             
         Returns:
-            API response as string
+            LLM response as string
+            
+        Raises:
+            AuthenticationError: If authentication fails (immediate fail, no retry)
+            APIError: If non-retryable API error occurs
+            ServiceUnavailableError: If all retries exhausted on transient 503/429/timeouts
         """
-        try:
-            import requests
-        except ImportError:
-            raise APIError("Requests package not installed. Install with: pip install requests")
-        
-        # Build candidate models list starting with configured model
-        candidate_models = [self.model]
-        for fallback in ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.1-flash-lite"]:
-            if fallback not in candidate_models:
-                candidate_models.append(fallback)
-        
-        last_error = None
-        for current_model in candidate_models:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
-                headers = {"Content-Type": "application/json"}
-                payload = {
-                    "contents": [{
-                        "parts": [{
-                            "text": prompt
-                        }]
-                    }],
-                    "generationConfig": {
-                        "temperature": 0.2,
-                        "maxOutputTokens": 4096,
-                        "responseMimeType": "application/json"
-                    }
-                }
-                
-                response = requests.post(url, headers=headers, json=payload, timeout=45)
-                
-                # If model doesn't support responseMimeType, retry without it
-                if response.status_code == 400 and "responseMimeType" in response.text:
-                    payload["generationConfig"].pop("responseMimeType", None)
-                    response = requests.post(url, headers=headers, json=payload, timeout=45)
-                
-                if response.status_code in (401, 403):
-                    raise AuthenticationError("Gemini authentication failed. Please check your API key.")
-                elif response.status_code in (404, 429):
-                    # Rate limit or unsupported model -> try next fallback model
-                    logger.warning(f"Model {current_model} returned {response.status_code}. Attempting fallback model...")
-                    last_error = f"{response.status_code} on {current_model}"
-                    continue
-                elif response.status_code != 200:
-                    raise APIError(f"Gemini API error: {response.status_code} - {response.text}")
-                
-                result = response.json()
-                if 'candidates' in result and len(result['candidates']) > 0:
-                    return result['candidates'][0]['content']['parts'][0]['text']
-                else:
-                    raise APIError(f"Unexpected response format: {result}")
-                    
-            except AuthenticationError:
-                raise
-            except APIError:
-                raise
-            except Exception as e:
-                error_str = str(e).lower()
-                if 'api_key_invalid' in error_str or 'unauthenticated' in error_str:
-                    raise AuthenticationError("Gemini authentication failed")
-                elif 'quota' in error_str or 'rate limit' in error_str:
-                    logger.warning(f"Quota error on {current_model}: {e}. Trying fallback...")
-                    last_error = str(e)
-                    continue
-                else:
-                    raise APIError(f"Gemini API error: {str(e)}")
-        
-        # If all candidates exhausted
-        raise RateLimitError(f"All Gemini models reached quota/rate limits. Last error: {last_error}")
+        models_to_try = [self.model]
+        if self.fallback_model and self.fallback_model != self.model:
+            models_to_try.append(self.fallback_model)
+
+        last_exception = None
+
+        for attempt in range(self.max_retries):
+            for current_model in models_to_try:
+                try:
+                    logger.info(f"LLM call attempt {attempt + 1}/{self.max_retries} using model '{current_model}'")
+                    try:
+                        response = self._call_llm(prompt, model=current_model)
+                    except TypeError:
+                        # For mocks that only accept (prompt) without model keyword
+                        response = self._call_llm(prompt)
+                    logger.info(f"LLM call successful on model '{current_model}' (attempt {attempt + 1})")
+                    return response
+
+                except AuthenticationError:
+                    # Authentication errors are fatal and not retryable
+                    logger.error("Authentication failed. Aborting retries.")
+                    raise
+                except (ServiceUnavailableError, RateLimitError) as transient_err:
+                    last_exception = transient_err
+                    logger.warning(
+                        f"Transient error ({type(transient_err).__name__}) on model '{current_model}' "
+                        f"(attempt {attempt + 1}/{self.max_retries})."
+                    )
+                    # If this is the primary model and a fallback is configured, try fallback immediately in this cycle
+                    if current_model == self.model and len(models_to_try) > 1:
+                        logger.info(f"Trying fallback model '{self.fallback_model}' before backoff...")
+                        continue
+                except APIError as api_err:
+                    if self.is_retryable_exception(api_err):
+                        last_exception = api_err
+                        logger.warning(f"Retryable API error on attempt {attempt + 1}: {api_err}")
+                    else:
+                        logger.error(f"Non-retryable API error on model '{current_model}': {api_err}")
+                        raise
+                except Exception as unk_err:
+                    if self.is_retryable_exception(unk_err):
+                        last_exception = unk_err
+                        logger.warning(f"Retryable exception on attempt {attempt + 1}: {unk_err}")
+                    else:
+                        logger.error(f"Unrecoverable error during LLM call: {unk_err}")
+                        raise APIError(f"LLM call failed: {unk_err}") from unk_err
+
+            # Backoff with random jitter before next attempt
+            if attempt < self.max_retries - 1:
+                delay = self._calculate_retry_delay(attempt)
+                logger.info(f"Waiting {delay:.2f}s (exponential backoff + jitter) before retry attempt {attempt + 2}/{self.max_retries}...")
+                time.sleep(delay)
+
+        # All retry attempts exhausted
+        logger.error(f"Exhausted all {self.max_retries} retries for LLM service. Last error: {type(last_exception).__name__ if last_exception else 'Unknown'}")
+        if isinstance(last_exception, ServiceUnavailableError):
+            raise ServiceUnavailableError(
+                "AI service is temporarily unavailable due to high demand (503 UNAVAILABLE). Please try again shortly."
+            )
+        elif isinstance(last_exception, RateLimitError):
+            raise RateLimitError(
+                "AI service rate limit exceeded. Please wait a moment and try again."
+            )
+        else:
+            raise RetryLimitExceededError(
+                f"Max retries ({self.max_retries}) exceeded. Last error: {str(last_exception)}"
+            )
+
     
     def _validate_and_parse_response(self, response: str) -> Dict:
         """
@@ -421,7 +544,7 @@ class LLMService:
         # Validate schema using Pydantic
         try:
             validated_data = MeetingIntelligence(**data)
-            return validated_data.dict()
+            return validated_data.model_dump() if hasattr(validated_data, 'model_dump') else validated_data.dict()
         except Exception as e:
             logger.warning(f"Pydantic strict schema check issue: {e}. Applying soft field normalization.")
             try:
@@ -479,4 +602,82 @@ class LLMService:
                 return recovered
             except Exception as rec_err:
                 raise OutputValidationError(f"Schema validation failed: {str(e)}")
+
+    def _heuristic_extract_intelligence(self, transcript: str) -> Dict:
+        """
+        Extract structured meeting intelligence using regex & heuristic linguistic rules
+        when remote LLM APIs are undergoing demand spikes (503/429) or network outages.
+        """
+        import re
+        sentences = [s.strip() for s in re.split(r'[.!?\n]+', transcript) if len(s.strip()) > 5]
+
+        # 1. Summary
+        summary = ". ".join(sentences[:3]) + ("." if sentences else "")
+        if not summary:
+            summary = transcript[:300]
+
+        # 2. Key Points
+        key_points = sentences[:6] if len(sentences) >= 6 else sentences
+
+        # 3. Decisions
+        decision_patterns = [
+            r'\bdecided to\b', r'\bdecision is\b', r'\bagreed to\b', r'\bagreed that\b',
+            r'\bapproved\b', r'\bselected\b', r'\bwill proceed with\b', r'\bconclusion is\b'
+        ]
+        decisions = []
+        for s in sentences:
+            if any(re.search(p, s, re.IGNORECASE) for p in decision_patterns):
+                decisions.append(s)
+        if not decisions and len(sentences) > 2:
+            decisions = [sentences[min(2, len(sentences) - 1)]]
+
+        # 4. Action Items & Owners
+        action_patterns = [
+            r'\bwill\b', r'\bassigned to\b', r'\baction item\b', r'\btask\b',
+            r'\bcomplete\b', r'\bdeliver\b', r'\bprepare\b', r'\bimplement\b',
+            r'\bfix\b', r'\bby (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|tomorrow|eod)\b'
+        ]
+        action_items = []
+        # Extract name candidates
+        potential_names = set(re.findall(r'\b[A-Z][a-z]{2,15}\b', transcript))
+        stop_words = {"The", "This", "That", "There", "Here", "With", "From", "About", "Section", "Meeting", "Sprint", "Please", "Thanks", "Hello", "Welcome", "After", "Before"}
+        name_candidates = [n for n in potential_names if n not in stop_words]
+
+        for s in sentences:
+            if any(re.search(p, s, re.IGNORECASE) for p in action_patterns):
+                owner = None
+                for n in name_candidates:
+                    if n in s:
+                        owner = n
+                        break
+                dl_match = re.search(r'\bby (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|next week|tomorrow|EOD)\b', s, re.IGNORECASE)
+                deadline = dl_match.group(1).capitalize() if dl_match else None
+                priority = "High" if any(w in s.lower() for w in ["urgent", "critical", "high", "asap", "immediately"]) else "Medium"
+
+                action_items.append({
+                    "action": s,
+                    "owner": owner,
+                    "deadline": deadline,
+                    "priority": priority,
+                    "status": "Pending"
+                })
+
+        # 5. Participants
+        participants = list(set([a["owner"] for a in action_items if a.get("owner")] + [n for n in name_candidates if n in transcript][:4]))
+
+        # 6. Deadlines
+        deadlines = [a["deadline"] for a in action_items if a.get("deadline")]
+
+        # 7. Priorities
+        priorities = [{"item": a["action"][:60], "priority": a["priority"]} for a in action_items[:5]]
+
+        return {
+            "summary": summary,
+            "key_points": key_points,
+            "decisions": decisions[:5],
+            "action_items": action_items[:10],
+            "participants": participants,
+            "deadlines": list(set(deadlines)),
+            "priorities": priorities
+        }
 

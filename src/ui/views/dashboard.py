@@ -74,7 +74,7 @@ def render_dashboard_view(db_manager, transcript_manager, summary_manager):
 
     # Quick Action Cards & Navigation Shortcuts
     st.markdown("#### ⚡ Quick Actions")
-    col_act1, col_act2, col_act3 = st.columns(3)
+    col_act1, col_act2, col_act3, col_act4 = st.columns(4)
 
     with col_act1:
         with st.container():
@@ -93,6 +93,19 @@ def render_dashboard_view(db_manager, transcript_manager, summary_manager):
         with st.container():
             st.markdown("""
             <div class="ui-card" style="min-height: 165px;">
+                <div style="font-size: 24px; margin-bottom: 8px;">🧠</div>
+                <div style="font-weight: 700; font-size: 15px; color: #0f172a; margin-bottom: 4px;">AI Search & Repo</div>
+                <div style="font-size: 13px; color: #64748b; margin-bottom: 12px;">Search historical meeting knowledge, decisions, participants & deadlines.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Search Knowledge →", key="dash_btn_search_repo", use_container_width=True):
+                st.session_state["nav_page"] = "Knowledge Repository"
+                st.rerun()
+
+    with col_act3:
+        with st.container():
+            st.markdown("""
+            <div class="ui-card" style="min-height: 165px;">
                 <div style="font-size: 24px; margin-bottom: 8px;">📝</div>
                 <div style="font-weight: 700; font-size: 15px; color: #0f172a; margin-bottom: 4px;">Transcript Workspace</div>
                 <div style="font-size: 13px; color: #64748b; margin-bottom: 12px;">View, inspect quality metrics, and search through speech-to-text transcripts.</div>
@@ -102,7 +115,7 @@ def render_dashboard_view(db_manager, transcript_manager, summary_manager):
                 st.session_state["nav_page"] = "Transcript Workspace"
                 st.rerun()
 
-    with col_act3:
+    with col_act4:
         with st.container():
             st.markdown("""
             <div class="ui-card" style="min-height: 165px;">

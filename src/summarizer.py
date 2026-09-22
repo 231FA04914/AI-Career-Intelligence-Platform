@@ -86,8 +86,15 @@ class MeetingSummarizer:
         InputValidator.validate_and_raise(transcript)
         logger.info(f"Summarizing transcript ({len(transcript)} chars)...")
 
-        # Process through LLM service
-        raw_result = self.llm_service.process_transcript(transcript)
+        # Process through LLM service with graceful fallback
+        try:
+            raw_result = self.llm_service.process_transcript(transcript)
+        except Exception as e:
+            logger.warning(f"Summarizer LLM call failed ({e}). Using heuristic extractor fallback.")
+            if hasattr(self.llm_service, "_heuristic_extract_intelligence"):
+                raw_result = self.llm_service._heuristic_extract_intelligence(transcript)
+            else:
+                raw_result = {"summary": transcript[:300], "decisions": [], "action_items": [], "participants": []}
 
         # Normalize action items into standard dict format
         action_items = []

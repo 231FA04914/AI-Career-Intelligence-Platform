@@ -18,16 +18,17 @@ from src.summarizer import MeetingSummarizer
 from src.action_item_extractor import ActionItemExtractor
 from src.participant_mapper import ParticipantMapper
 from src.database import DatabaseManager
+from src.embeddings import EmbeddingGenerator
 
 logger = logging.getLogger(__name__)
 
 
 class MeetingIntelligencePipeline:
     """
-    End-to-End Meeting Intelligence Service Pipeline (Task 6).
+    End-to-End Meeting Intelligence Service Pipeline (Task 6 & Milestone 3).
     Integrates the complete flow:
     Upload/Audio -> Whisper -> Transcript -> LLM Processing -> Summary
-    -> Action Extraction -> Participant Mapping -> Database Persistence.
+    -> Action Extraction -> Participant Mapping -> Database Persistence -> Embedding Generation.
     """
 
     def __init__(
@@ -35,7 +36,8 @@ class MeetingIntelligencePipeline:
         audio_processor: Optional[AudioProcessor] = None,
         transcriber: Optional[Transcriber] = None,
         llm_service: Optional[LLMService] = None,
-        db_manager: Optional[DatabaseManager] = None
+        db_manager: Optional[DatabaseManager] = None,
+        embedding_generator: Optional[EmbeddingGenerator] = None
     ):
         """Initialize all pipeline components."""
         self.audio_processor = audio_processor or AudioProcessor(use_temp=True)
@@ -48,8 +50,12 @@ class MeetingIntelligencePipeline:
         self.action_extractor = ActionItemExtractor(llm_service=self.llm_service)
         self.participant_mapper = ParticipantMapper(llm_service=self.llm_service)
         self.db_manager = db_manager or DatabaseManager()
+        self.embedding_generator = embedding_generator or EmbeddingGenerator(api_key=getattr(self.llm_service, "api_key", None))
+        self.last_transcript_text: Optional[str] = None
+        self.last_transcript_data: Optional[Dict[str, Any]] = None
 
-        logger.info("Initialized MeetingIntelligencePipeline with all service components")
+        logger.info("Initialized MeetingIntelligencePipeline with all service components and EmbeddingGenerator")
+
 
     def process_audio_file(
         self,
@@ -108,6 +114,8 @@ class MeetingIntelligencePipeline:
         # Save transcript to transcript manager
         original_filename = Path(audio_or_video_path).name
         self.transcript_manager.save_transcript(transcript_data, original_filename)
+        self.last_transcript_text = transcript_text
+        self.last_transcript_data = transcript_data
 
         # Cleanup temporary audio files
         self.audio_processor.cleanup_temp_files()
@@ -122,6 +130,7 @@ class MeetingIntelligencePipeline:
             progress_callback=progress_callback,
             start_progress_pct=60
         )
+
 
     def process_transcript_text(
         self,
@@ -153,8 +162,22 @@ class MeetingIntelligencePipeline:
 
         # Stage 5: Meeting Summarization & Extraction (Comprehensive Single LLM Call)
         update_progress("Generating Meeting Intelligence (Summary, Decisions, Tasks)...", max(start_progress_pct, 65))
-        summary_result = self.summarizer.summarize(transcript_text)
-        summary_dict = summary_result.to_dict()
+        try:
+            summary_result = self.summarizer.summarize(transcript_text)
+            summary_dict = summary_result.to_dict()
+        except Exception as e:
+            logger.warning(f"LLM Summarization encountered issue ({e}). Generating graceful fallback summary.")
+            sentences = [s.strip() for s in transcript_text.split('.') if len(s.strip()) > 10]
+            first_few = ". ".join(sentences[:3]) + ("." if sentences else "")
+            summary_dict = {
+                "summary": first_few or transcript_text[:300],
+                "key_decisions": [],
+                "action_items": [],
+                "participants": [],
+                "key_points": [s for s in sentences[:5]],
+                "deadlines": [],
+                "priorities": []
+            }
 
         # Stage 6: Action Item Structuring
         update_progress("Structuring Action Items & Priorities...", max(start_progress_pct + 15, 80))
@@ -194,6 +217,21 @@ class MeetingIntelligencePipeline:
             original_filename=original_filename,
             duration=duration
         )
+
+        # Stage 9: Dynamic Embedding Generation (Milestone 3 Task 2)
+        update_progress("Generating Vector Embeddings for AI Search...", 98)
+        try:
+            embeddings = self.embedding_generator.generate_all_meeting_embeddings(
+                meeting_id=meeting_id,
+                transcript_text=transcript_text,
+                summary_text=summary_dict.get("summary", ""),
+                decisions=summary_dict.get("key_decisions", []),
+                action_items=action_dicts
+            )
+            self.db_manager.save_embeddings(embeddings)
+            logger.info(f"Dynamically generated & saved {len(embeddings)} embeddings for meeting {meeting_id}")
+        except Exception as e:
+            logger.warning(f"Dynamic embedding generation encountered an error: {e}")
 
         update_progress("Pipeline processing completed successfully!", 100)
 

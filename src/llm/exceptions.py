@@ -41,3 +41,9 @@ class ChunkingError(LLMServiceError):
 class RetryLimitExceededError(LLMServiceError):
     """Raised when retry limit is exceeded."""
     pass
+
+
+class ServiceUnavailableError(APIError):
+    """Raised when the LLM service is temporarily unavailable (503/high demand)."""
+    pass
+

@@ -28,6 +28,9 @@ from src.validator import FileValidator, TranscriptValidator
 from src.transcript_manager import TranscriptManager
 from src.summary_manager import SummaryManager
 from src.database import DatabaseManager
+from src.embeddings import EmbeddingGenerator
+from src.vector_db import VectorDatabase
+from src.repository import MeetingKnowledgeRepository
 from src.llm import LLMService, AuthenticationError
 from src.summarizer import MeetingSummarizer
 from src.action_item_extractor import ActionItemExtractor
@@ -43,6 +46,7 @@ from src.ui.views.transcript_view import render_transcript_view
 from src.ui.views.ai_insights import render_ai_insights_view
 from src.ui.views.career_intelligence import render_career_intelligence_view
 from src.ui.views.interview_prep import render_interview_prep_view
+from src.ui.views.knowledge_repository import render_knowledge_repository_view
 from src.ui.views.database_archive import render_database_archive_view
 from src.ui.views.settings_view import render_settings_view
 
@@ -86,6 +90,8 @@ def main():
     transcript_manager = TranscriptManager()
     summary_manager = SummaryManager()
     db_manager = DatabaseManager()
+    embedder = EmbeddingGenerator()
+    vector_db = VectorDatabase(db_manager=db_manager, embedding_generator=embedder)
 
     # Initialize AI LLM Pipeline components
     try:
@@ -97,7 +103,14 @@ def main():
             audio_processor=audio_processor,
             transcriber=transcriber,
             llm_service=llm_service,
-            db_manager=db_manager
+            db_manager=db_manager,
+            embedding_generator=embedder
+        )
+        repository = MeetingKnowledgeRepository(
+            db_manager=db_manager,
+            llm_service=llm_service,
+            embedding_generator=embedder,
+            vector_db=vector_db
         )
         ai_ready = True
     except AuthenticationError:
@@ -106,6 +119,7 @@ def main():
         action_extractor = None
         participant_mapper = None
         pipeline = None
+        repository = MeetingKnowledgeRepository(db_manager=db_manager, llm_service=None, embedding_generator=embedder, vector_db=vector_db)
         ai_ready = False
     except Exception:
         llm_service = None
@@ -113,6 +127,7 @@ def main():
         action_extractor = None
         participant_mapper = None
         pipeline = None
+        repository = MeetingKnowledgeRepository(db_manager=db_manager, llm_service=None, embedding_generator=embedder, vector_db=vector_db)
         ai_ready = False
 
     # ----------------------------------------------------
@@ -127,6 +142,7 @@ def main():
         "🎤 Interview Analysis",
         "📝 Transcript Workspace",
         "🧠 AI Insights",
+        "🔍 Knowledge Repository",
         "📊 Career Intelligence",
         "🎯 Interview Preparation",
         "🗄️ Database & Archive",
@@ -139,6 +155,7 @@ def main():
         "Interview Analysis": "🎤 Interview Analysis",
         "Transcript Workspace": "📝 Transcript Workspace",
         "AI Insights": "🧠 AI Insights",
+        "Knowledge Repository": "🔍 Knowledge Repository",
         "Career Intelligence": "📊 Career Intelligence",
         "Interview Preparation": "🎯 Interview Preparation",
         "Database & Archive": "🗄️ Database & Archive",
@@ -214,11 +231,20 @@ def main():
             db_manager=db_manager
         )
 
+    elif current_page == "Knowledge Repository":
+        render_knowledge_repository_view(
+            repository=repository,
+            db_manager=db_manager
+        )
+
     elif current_page == "Career Intelligence":
         render_career_intelligence_view()
 
     elif current_page == "Interview Preparation":
-        render_interview_prep_view()
+        render_interview_prep_view(
+            db_manager=db_manager,
+            llm_service=llm_service
+        )
 
     elif current_page == "Database & Archive":
         render_database_archive_view(
