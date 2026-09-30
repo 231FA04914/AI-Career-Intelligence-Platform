@@ -1,6 +1,7 @@
 """
-AI Career Intelligence Platform - Main Application
-Executive-Grade AI SaaS Interface for Audio Transcription, LLM Intelligence & Career Analytics.
+AI Career Intelligence Platform - Main Application (Milestone 4)
+Executive-Grade AI SaaS Interface for Audio Transcription, LLM Intelligence,
+Multi-Tenant Authentication, Zoom & Google Meet Integrations, and RAG Career Analytics.
 """
 
 import os
@@ -36,11 +37,17 @@ from src.summarizer import MeetingSummarizer
 from src.action_item_extractor import ActionItemExtractor
 from src.participant_mapper import ParticipantMapper
 from src.pipeline import MeetingIntelligencePipeline
+from src.auth import AuthManager
+from src.integrations.zoom import ZoomIntegration
+from src.integrations.google_meet import GoogleMeetIntegration
 
 # Import UI System & Views
 from src.ui.theme import apply_theme
 from src.ui.components import render_sidebar_brand, render_system_status, render_footer
 from src.ui.views.dashboard import render_dashboard_view
+from src.ui.views.meeting_details import render_meeting_details_view
+from src.ui.views.integrations_view import render_integrations_view
+from src.ui.views.auth_modal import render_auth_sidebar_widget, render_auth_dialog, render_login_view
 from src.ui.views.interview_analysis import render_interview_analysis_view
 from src.ui.views.transcript_view import render_transcript_view
 from src.ui.views.ai_insights import render_ai_insights_view
@@ -74,6 +81,10 @@ def init_session_state():
         st.session_state["extracted_actions_list"] = []
     if "mapped_participants_list" not in st.session_state:
         st.session_state["mapped_participants_list"] = []
+    if "selected_meeting_id" not in st.session_state:
+        st.session_state["selected_meeting_id"] = None
+    if "show_auth_modal" not in st.session_state:
+        st.session_state["show_auth_modal"] = False
 
 
 def main():
@@ -92,6 +103,9 @@ def main():
     db_manager = DatabaseManager()
     embedder = EmbeddingGenerator()
     vector_db = VectorDatabase(db_manager=db_manager, embedding_generator=embedder)
+    auth_manager = AuthManager(db_manager=db_manager)
+    zoom_integration = ZoomIntegration()
+    google_meet_integration = GoogleMeetIntegration()
 
     # Initialize AI LLM Pipeline components
     try:
@@ -131,18 +145,49 @@ def main():
         ai_ready = False
 
     # ----------------------------------------------------
-    # SIDEBAR NAVIGATION
+    # SIDEBAR NAVIGATION & AUTH
     # ----------------------------------------------------
     render_sidebar_brand()
+
+    # User Authentication widget in sidebar
+    current_user = render_auth_sidebar_widget(auth_manager)
+    user_id = current_user.get("user_id") or current_user.get("id") if current_user else None
+
+    # Render Auth Modal if toggled
+    render_auth_dialog(auth_manager)
+
+    # ----------------------------------------------------
+    # ACCESS CONTROL CHECK (Require Login for Main Navigation & Pages)
+    # ----------------------------------------------------
+    if not current_user:
+        # Hide Main Navigation when not authenticated
+        st.sidebar.markdown('<div class="nav-header">Platform Security</div>', unsafe_allow_html=True)
+        st.sidebar.info("🔒 Main Navigation is locked. Please sign in or use a demo account to unlock all modules.")
+
+        # Sidebar Quick Stats / Status
+        render_system_status(
+            ai_ready=ai_ready,
+            whisper_ready=True,
+            db_ready=db_manager is not None
+        )
+
+        # Render full-page secure Login Gateway
+        render_login_view(auth_manager)
+
+        # Global Footer
+        render_footer()
+        return
 
     st.sidebar.markdown('<div class="nav-header">Main Navigation</div>', unsafe_allow_html=True)
 
     nav_options = [
         "🏠 Dashboard",
+        "📋 Meeting Details & Analytics",
         "🎤 Interview Analysis",
         "📝 Transcript Workspace",
         "🧠 AI Insights",
-        "🔍 Knowledge Repository",
+        "🔍 Knowledge Repository & RAG",
+        "☁️ Cloud Platform Integrations",
         "📊 Career Intelligence",
         "🎯 Interview Preparation",
         "🗄️ Database & Archive",
@@ -152,10 +197,12 @@ def main():
     # Map current state to nav options
     page_to_option = {
         "Dashboard": "🏠 Dashboard",
+        "Meeting Details": "📋 Meeting Details & Analytics",
         "Interview Analysis": "🎤 Interview Analysis",
         "Transcript Workspace": "📝 Transcript Workspace",
         "AI Insights": "🧠 AI Insights",
-        "Knowledge Repository": "🔍 Knowledge Repository",
+        "Knowledge Repository": "🔍 Knowledge Repository & RAG",
+        "Platform Integrations": "☁️ Cloud Platform Integrations",
         "Career Intelligence": "📊 Career Intelligence",
         "Interview Preparation": "🎯 Interview Preparation",
         "Database & Archive": "🗄️ Database & Archive",
@@ -196,7 +243,25 @@ def main():
         render_dashboard_view(
             db_manager=db_manager,
             transcript_manager=transcript_manager,
-            summary_manager=summary_manager
+            summary_manager=summary_manager,
+            repository=repository,
+            pipeline=pipeline,
+            user_info=current_user
+        )
+
+    elif current_page == "Meeting Details":
+        render_meeting_details_view(
+            db_manager=db_manager,
+            user_id=user_id
+        )
+
+    elif current_page == "Platform Integrations":
+        render_integrations_view(
+            zoom_integration=zoom_integration,
+            google_meet_integration=google_meet_integration,
+            pipeline=pipeline,
+            db_manager=db_manager,
+            user_id=user_id
         )
 
     elif current_page == "Interview Analysis":

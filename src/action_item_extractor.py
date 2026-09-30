@@ -65,7 +65,13 @@ class ActionItemExtractor:
         Args:
             llm_service: Optional LLMService instance.
         """
-        self.llm_service = llm_service or LLMService()
+        if llm_service is not None:
+            self.llm_service = llm_service
+        else:
+            try:
+                self.llm_service = LLMService()
+            except Exception:
+                self.llm_service = None
         logger.info("Initialized ActionItemExtractor Engine")
 
     def extract_action_items(self, transcript: str) -> List[ExtractedActionItem]:

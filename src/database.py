@@ -114,6 +114,19 @@ class DatabaseManager:
                 );
             """)
 
+            # Users Table (Milestone 4 - Task 7)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    salt TEXT NOT NULL,
+                    role TEXT DEFAULT 'user',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
             # Embeddings Table (Milestone 3 - Tasks 2 & 3)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings (
@@ -138,7 +151,69 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+            # Ensure user_id column exists on meetings table (Milestone 4 Multi-Tenancy)
+            try:
+                cursor.execute("ALTER TABLE meetings ADD COLUMN user_id TEXT DEFAULT NULL;")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             conn.commit()
+
+    # ========================================================================
+    # User Management & Multi-Tenant Access (Milestone 4 - Task 7)
+    # ========================================================================
+
+    def create_user(
+        self,
+        username: str,
+        email: str,
+        password_hash: str,
+        salt: str,
+        role: str = "user",
+        user_id: Optional[str] = None
+    ) -> str:
+        """Create a new user in the database."""
+        u_id = user_id or f"usr_{uuid.uuid4().hex[:10]}"
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (id, username, email, password_hash, salt, role, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (u_id, username.strip().lower(), email.strip().lower(), password_hash, salt, role, datetime.now().isoformat()))
+            conn.commit()
+        logger.info(f"Created user {username} (id={u_id})")
+        return u_id
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user by username."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE LOWER(username) = ?", (username.strip().lower(),))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user by email."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE LOWER(email) = ?", (email.strip().lower(),))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user by ID."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def list_users(self) -> List[Dict[str, Any]]:
+        """Retrieve list of all users."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username, email, role, created_at FROM users ORDER BY created_at ASC")
+            return [dict(row) for row in cursor.fetchall()]
 
     def save_meeting_intelligence(
         self,
@@ -151,7 +226,8 @@ class DatabaseManager:
         original_filename: Optional[str] = None,
         duration: float = 0.0,
         meeting_id: Optional[str] = None,
-        created_at: Optional[str] = None
+        created_at: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> str:
         """
         Save complete processed meeting intelligence to database in a single transaction.
@@ -167,6 +243,7 @@ class DatabaseManager:
             duration: Audio duration in seconds.
             meeting_id: Optional unique identifier.
             created_at: Optional ISO creation timestamp.
+            user_id: Optional owner user ID for multi-tenant isolation.
             
         Returns:
             Saved meeting_id string.
@@ -179,9 +256,9 @@ class DatabaseManager:
 
             # 1. Insert Meeting
             cursor.execute("""
-                INSERT OR REPLACE INTO meetings (id, title, original_filename, transcript_text, duration, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (m_id, title, original_filename, transcript_text, duration, created_time))
+                INSERT OR REPLACE INTO meetings (id, title, original_filename, transcript_text, duration, created_at, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (m_id, title, original_filename, transcript_text, duration, created_time, user_id))
 
             # 2. Insert Summary
             s_id = f"sum_{uuid.uuid4().hex[:8]}"
@@ -247,12 +324,13 @@ class DatabaseManager:
         logger.info(f"Successfully saved meeting intelligence for meeting_id={m_id}")
         return m_id
 
-    def get_meeting(self, meeting_id: str) -> Optional[Dict[str, Any]]:
+    def get_meeting(self, meeting_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Retrieve complete meeting details by ID.
+        Retrieve complete meeting details by ID, with optional user ownership check.
         
         Args:
             meeting_id: Meeting unique identifier.
+            user_id: Optional user ID to enforce isolation.
             
         Returns:
             Dictionary containing meeting record and related sub-records.
@@ -266,6 +344,15 @@ class DatabaseManager:
                 return None
 
             meeting = dict(meeting_row)
+
+            # Check tenant isolation if user_id is provided and meeting has an owner
+            m_owner = meeting.get("user_id")
+            if user_id and m_owner and m_owner != user_id:
+                # Check if requesting user is admin
+                admin_check = cursor.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+                if not admin_check or admin_check["role"] != "admin":
+                    logger.warning(f"Unauthorized access attempt to meeting {meeting_id} by user {user_id}")
+                    return None
 
             # Get Summary
             cursor.execute("SELECT summary_text FROM summaries WHERE meeting_id = ? ORDER BY created_at DESC LIMIT 1", (meeting_id,))
@@ -286,35 +373,39 @@ class DatabaseManager:
 
             return meeting
 
-    def get_all_meetings(self) -> List[Dict[str, Any]]:
+    def get_all_meetings(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Retrieve summary list of all meetings ordered by creation date (newest first).
-        
-        Returns:
-            List of meeting summaries.
+        Retrieve summary list of meetings ordered by creation date (newest first).
+        If user_id is given, filters to meetings owned by that user or public/legacy meetings.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT m.id, m.title, m.original_filename, m.duration, m.created_at,
+            
+            query = """
+                SELECT m.id, m.title, m.original_filename, m.duration, m.created_at, m.user_id,
                        (SELECT summary_text FROM summaries WHERE meeting_id = m.id LIMIT 1) as summary,
                        (SELECT COUNT(*) FROM action_items WHERE meeting_id = m.id) as action_item_count,
                        (SELECT COUNT(*) FROM participants WHERE meeting_id = m.id) as participant_count
                 FROM meetings m
-                ORDER BY m.created_at DESC
-            """)
+            """
+            params = []
+            if user_id:
+                # Allow meetings owned by user or shared/legacy meetings where user_id IS NULL
+                query += " WHERE (m.user_id = ? OR m.user_id IS NULL)"
+                params.append(user_id)
+
+            query += " ORDER BY m.created_at DESC"
+            cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_all_action_items(self, status: Optional[str] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_all_action_items(
+        self,
+        status: Optional[str] = None,
+        owner: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Query action items across all meetings with optional filters.
-        
-        Args:
-            status: Optional filter by status.
-            owner: Optional filter by assignee.
-            
-        Returns:
-            List of action items with meeting title.
+        Query action items across all meetings with optional filters and user scoping.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -325,6 +416,9 @@ class DatabaseManager:
                 WHERE 1=1
             """
             params = []
+            if user_id:
+                query += " AND (m.user_id = ? OR m.user_id IS NULL)"
+                params.append(user_id)
             if status and status != "All":
                 query += " AND a.status = ?"
                 params.append(status)
@@ -785,10 +879,21 @@ class DatabaseManager:
                 "checked_at": datetime.now().isoformat()
             }
 
-    def delete_meeting(self, meeting_id: str) -> bool:
-        """Delete a meeting and all cascading child records."""
+    def delete_meeting(self, meeting_id: str, user_id: Optional[str] = None) -> bool:
+        """Delete a meeting and all cascading child records, with optional owner validation."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            if user_id:
+                meeting = cursor.execute("SELECT user_id FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+                if not meeting:
+                    return False
+                m_owner = meeting["user_id"]
+                if m_owner and m_owner != user_id:
+                    admin_check = cursor.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+                    if not admin_check or admin_check["role"] != "admin":
+                        logger.warning(f"Unauthorized deletion attempt of meeting {meeting_id} by user {user_id}")
+                        return False
+
             cursor.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
             conn.commit()
             return cursor.rowcount > 0

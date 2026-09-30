@@ -1,13 +1,26 @@
 """
-AI Career Intelligence Platform - Advanced REST API Layer (Milestone 3 - Task 6)
-Integrates RAG, Semantic Search, and Meeting Knowledge Repository with FastAPI.
+AI Career Intelligence Platform - Advanced REST API Layer (Milestones 3 & 4)
+Integrates RAG, Semantic Search, Authentication, Zoom & Google Meet Integrations,
+Report Exports (PDF/CSV), and Meeting Knowledge Repository with FastAPI.
 
 Endpoints:
-- GET  /health          : Service health & database connectivity
-- GET  /meetings        : List and filter historical meetings
-- GET  /meetings/{id}   : Retrieve complete meeting details & intelligence
-- POST /search          : Sub-3-second multi-entity & semantic vector search
-- POST /ask             : Grounded RAG Question Answering with citations
+- GET  /health                          : Service health, database, vector index & integrations status
+- POST /auth/register                   : User registration with hashed credentials
+- POST /auth/login                      : User authentication & signed session token issuance
+- GET  /auth/me                         : Current user session introspection
+- GET  /meetings                        : List and filter historical meetings with user-scoping
+- GET  /meetings/{id}                   : Retrieve complete meeting details & intelligence
+- DELETE /meetings/{id}                 : Delete meeting record and associated intelligence
+- GET  /meetings/{id}/export            : Export meeting report as PDF or CSV
+- GET  /meetings/{id}/analytics         : Compute meeting analytics, task metrics, and distributions
+- POST /search                          : Sub-3-second multi-entity & semantic vector search
+- POST /ask                             : Grounded RAG Question Answering with citations
+- GET  /integrations/zoom/recordings    : List available Zoom cloud recordings
+- POST /integrations/zoom/import        : Ingest Zoom recording into pipeline & vector repo
+- POST /integrations/zoom/webhook       : Zoom webhook receiver (recording.completed)
+- GET  /integrations/google-meet/recordings : List Google Meet recordings from Drive
+- POST /integrations/google-meet/import     : Ingest Google Meet recording into pipeline
+- POST /integrations/google-meet/webhook    : Google Drive push notification webhook
 """
 
 import os
@@ -17,11 +30,11 @@ from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Security, Depends, status, Query, Path as PathParam, Request
+from fastapi import FastAPI, HTTPException, Security, Depends, status, Query, Path as PathParam, Request, Response
 from fastapi.security.api_key import APIKeyHeader, APIKeyQuery
 from fastapi.security.http import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, FileResponse
 from pydantic import BaseModel, Field, ConfigDict
 
 from src.database import DatabaseManager
@@ -31,6 +44,11 @@ from src.repository import MeetingKnowledgeRepository
 from src.semantic_search import SemanticSearchEngine, SemanticSearchResult
 from src.llm.service import LLMService
 from src.llm.exceptions import AuthenticationError, RateLimitError, APIError
+from src.pipeline import MeetingIntelligencePipeline
+from src.auth import AuthManager, verify_session_token
+from src.reports.exporter import generate_meeting_pdf, generate_meeting_csv
+from src.integrations.zoom import ZoomIntegration
+from src.integrations.google_meet import GoogleMeetIntegration
 
 # Configure structured logging
 logging.basicConfig(level=logging.INFO)
@@ -39,8 +57,8 @@ logger = logging.getLogger("api_gateway")
 # Initialize FastAPI App
 app = FastAPI(
     title="AI Career Intelligence Platform API",
-    description="Advanced API Layer for Meeting Intelligence, RAG Q&A, Semantic Search & Vector Knowledge Repository.",
-    version="3.0.0",
+    description="Executive-grade REST API for Meeting Intelligence, Multi-Tenant Auth, RAG Q&A, Zoom & Google Meet Integrations, and PDF/CSV Exports.",
+    version="4.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -84,7 +102,7 @@ async def add_process_time_header(request: Request, call_next):
 
 
 # ============================================================================
-# Authentication Security Layer
+# Authentication Security Layer (Task 7)
 # ============================================================================
 
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -110,7 +128,7 @@ def verify_api_key(
     bearer_creds: Optional[HTTPAuthorizationCredentials] = Security(HTTP_BEARER)
 ) -> str:
     """
-    Authenticate API requests via X-API-Key header, query param, or Bearer token.
+    Authenticate API requests via X-API-Key header, query param, Bearer token, or signed user session token.
     """
     token = None
     if header_key:
@@ -126,6 +144,12 @@ def verify_api_key(
             detail="Missing authentication credentials. Provide 'X-API-Key' header or Bearer token."
         )
 
+    # Check if token is a signed user session token
+    user_payload = verify_session_token(token)
+    if user_payload:
+        return token
+
+    # Check against configured API keys
     valid_keys = get_configured_api_keys()
     if token not in valid_keys:
         raise HTTPException(
@@ -136,18 +160,41 @@ def verify_api_key(
     return token
 
 
+def get_current_user_optional(
+    header_key: Optional[str] = Security(API_KEY_HEADER),
+    query_key: Optional[str] = Security(API_KEY_QUERY),
+    bearer_creds: Optional[HTTPAuthorizationCredentials] = Security(HTTP_BEARER)
+) -> Optional[Dict[str, Any]]:
+    """Extract authenticated user session payload if present, otherwise None."""
+    token = None
+    if header_key:
+        token = header_key.strip()
+    elif bearer_creds and bearer_creds.credentials:
+        token = bearer_creds.credentials.strip()
+    elif query_key:
+        token = query_key.strip()
+
+    if token:
+        return verify_session_token(token)
+    return None
+
+
 # ============================================================================
 # Service Dependency Injection Container
 # ============================================================================
 
 class ServiceContainer:
-    """Manages lazy-loaded singleton instances of backend and RAG services."""
+    """Manages lazy-loaded singleton instances of backend, RAG, and integration services."""
     _db: Optional[DatabaseManager] = None
     _embedder: Optional[EmbeddingGenerator] = None
     _vector_db: Optional[VectorDatabase] = None
     _llm: Optional[LLMService] = None
     _repo: Optional[MeetingKnowledgeRepository] = None
     _search_engine: Optional[SemanticSearchEngine] = None
+    _auth: Optional[AuthManager] = None
+    _pipeline: Optional[MeetingIntelligencePipeline] = None
+    _zoom: Optional[ZoomIntegration] = None
+    _google_meet: Optional[GoogleMeetIntegration] = None
 
     @classmethod
     def get_db(cls) -> DatabaseManager:
@@ -202,6 +249,34 @@ class ServiceContainer:
             )
         return cls._search_engine
 
+    @classmethod
+    def get_auth(cls) -> AuthManager:
+        if cls._auth is None:
+            cls._auth = AuthManager(db_manager=cls.get_db())
+        return cls._auth
+
+    @classmethod
+    def get_pipeline(cls) -> MeetingIntelligencePipeline:
+        if cls._pipeline is None:
+            cls._pipeline = MeetingIntelligencePipeline(
+                llm_service=cls.get_llm(),
+                db_manager=cls.get_db(),
+                embedding_generator=cls.get_embedder()
+            )
+        return cls._pipeline
+
+    @classmethod
+    def get_zoom(cls) -> ZoomIntegration:
+        if cls._zoom is None:
+            cls._zoom = ZoomIntegration()
+        return cls._zoom
+
+    @classmethod
+    def get_google_meet(cls) -> GoogleMeetIntegration:
+        if cls._google_meet is None:
+            cls._google_meet = GoogleMeetIntegration()
+        return cls._google_meet
+
 
 # ============================================================================
 # Pydantic Schemas for Requests & Responses
@@ -212,21 +287,32 @@ class HealthResponse(BaseModel):
     database: str
     vector_store: str
     llm_service: str
+    zoom_integration: str
+    google_meet_integration: str
     persisted_meetings: int
     stored_vectors: int
+    registered_users: int
     timestamp: str
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "status": "healthy",
-            "database": "connected",
-            "vector_store": "ready",
-            "llm_service": "configured",
-            "persisted_meetings": 12,
-            "stored_vectors": 85,
-            "timestamp": "2026-09-21T19:00:00"
-        }
-    })
+
+class UserRegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    email: str = Field(..., min_length=5, max_length=100)
+    password: str = Field(..., min_length=6, max_length=100)
+    role: str = Field("user", description="User role ('user' or 'admin')")
+
+
+class UserLoginRequest(BaseModel):
+    username_or_email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=1)
+
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    email: str
+    role: str
+    token: str
 
 
 class MeetingSummaryItem(BaseModel):
@@ -235,6 +321,7 @@ class MeetingSummaryItem(BaseModel):
     created_at: Optional[str] = None
     original_filename: Optional[str] = None
     duration: float = 0.0
+    user_id: Optional[str] = None
     summary_preview: Optional[str] = None
     action_items_count: int = 0
     participants_count: int = 0
@@ -254,12 +341,28 @@ class MeetingDetailResponse(BaseModel):
     created_at: Optional[str] = None
     original_filename: Optional[str] = None
     duration: float = 0.0
+    user_id: Optional[str] = None
     transcript: str = ""
     summary: str = ""
     key_decisions: List[str] = Field(default_factory=list)
     action_items: List[Dict[str, Any]] = Field(default_factory=list)
     participants: List[Dict[str, Any]] = Field(default_factory=list)
     vector_count: int = 0
+
+
+class MeetingAnalyticsResponse(BaseModel):
+    meeting_id: str
+    title: str
+    duration_seconds: float
+    total_action_items: int
+    completed_actions: int
+    pending_actions: int
+    in_progress_actions: int
+    priority_distribution: Dict[str, int]
+    decisions_count: int
+    participant_count: int
+    participant_workload: Dict[str, int]
+    deadlines_summary: List[Dict[str, Any]]
 
 
 class SearchRequest(BaseModel):
@@ -272,16 +375,6 @@ class SearchRequest(BaseModel):
     )
     top_k: int = Field(5, ge=1, le=50, description="Max matching meetings to return")
     min_score: float = Field(0.0, ge=0.0, le=1.0, description="Minimum cosine relevance threshold")
-
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "query": "mobile release timeline and API integration deliverables",
-            "date_from": "2026-08-01",
-            "date_to": "2026-09-30",
-            "top_k": 5,
-            "min_score": 0.2
-        }
-    })
 
 
 class RelevantMeetingItem(BaseModel):
@@ -316,13 +409,6 @@ class AskRequest(BaseModel):
     date_to: Optional[str] = Field(None, description="Optional ISO date upper bound")
     max_context_meetings: int = Field(5, ge=1, le=20, description="Max source meetings to include in context")
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "question": "What tasks were assigned to Ravi and when are they due?",
-            "max_context_meetings": 5
-        }
-    })
-
 
 class CitationItem(BaseModel):
     meeting_id: str
@@ -343,32 +429,114 @@ class AskResponse(BaseModel):
     timestamp: str
 
 
+class IntegrationImportRequest(BaseModel):
+    recording_id: str
+    user_id: Optional[str] = None
+    custom_title: Optional[str] = None
+
+
+class IntegrationImportResponse(BaseModel):
+    success: bool
+    status: str
+    recording_id: str
+    meeting_id: Optional[str] = None
+    title: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+
 # ============================================================================
-# API Endpoints Implementation
+# Authentication Endpoints (Task 7)
+# ============================================================================
+
+@app.post("/auth/register", response_model=UserResponse, tags=["Authentication & User Management"])
+def register_user(request: UserRegisterRequest):
+    """Register a new user account with hashed password credentials."""
+    auth_mgr = ServiceContainer.get_auth()
+    try:
+        user = auth_mgr.register_user(
+            username=request.username,
+            email=request.email,
+            password=request.password,
+            role=request.role
+        )
+        return UserResponse(
+            id=user["id"],
+            username=user["username"],
+            email=user["email"],
+            role=user["role"],
+            token=user["token"]
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except Exception as e:
+        logger.exception(f"Registration failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Registration failed.")
+
+
+@app.post("/auth/login", response_model=UserResponse, tags=["Authentication & User Management"])
+def login_user(request: UserLoginRequest):
+    """Authenticate user credentials and issue signed session token."""
+    auth_mgr = ServiceContainer.get_auth()
+    user = auth_mgr.authenticate_user(
+        username_or_email=request.username_or_email,
+        password=request.password
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username/email or password."
+        )
+    return UserResponse(
+        id=user["id"],
+        username=user["username"],
+        email=user["email"],
+        role=user["role"],
+        token=user["token"]
+    )
+
+
+@app.get("/auth/me", tags=["Authentication & User Management"])
+def get_current_user_profile(
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """Retrieve details for current active session."""
+    if current_user:
+        return {"authenticated": True, "user": current_user}
+    return {"authenticated": True, "type": "api_key", "details": "Authenticated via valid API Key"}
+
+
+# ============================================================================
+# System Health & Status Endpoint
 # ============================================================================
 
 @app.get("/health", response_model=HealthResponse, tags=["System Health"])
 def health_check():
-    """
-    Check system health, database readiness, and vector index status.
-    """
+    """Check system health, database readiness, vector index, and integration services."""
     db = ServiceContainer.get_db()
     vdb = ServiceContainer.get_vector_db()
     llm = ServiceContainer.get_llm()
+    zoom = ServiceContainer.get_zoom()
+    gmeet = ServiceContainer.get_google_meet()
 
     try:
         meetings = db.get_all_meetings()
         persisted_count = len(meetings)
         vdb_stats = vdb.get_stats()
         vector_count = vdb_stats.get("total_vectors", 0)
+        users = db.list_users()
 
         return HealthResponse(
             status="healthy",
             database="connected",
             vector_store="ready",
             llm_service="configured" if llm is not None else "unavailable",
+            zoom_integration="configured" if zoom.is_configured() else "sandbox_ready",
+            google_meet_integration="configured" if gmeet.is_configured() else "sandbox_ready",
             persisted_meetings=persisted_count,
             stored_vectors=vector_count,
+            registered_users=len(users),
             timestamp=datetime.now().isoformat()
         )
     except Exception as e:
@@ -378,29 +546,41 @@ def health_check():
             database="error",
             vector_store="unknown",
             llm_service="error",
+            zoom_integration="unknown",
+            google_meet_integration="unknown",
             persisted_meetings=0,
             stored_vectors=0,
+            registered_users=0,
             timestamp=datetime.now().isoformat()
         )
 
+
+# ============================================================================
+# Meeting Management Endpoints (Tasks 1, 2 & 7)
+# ============================================================================
 
 @app.get("/meetings", response_model=MeetingListResponse, tags=["Meetings"])
 def list_meetings(
     date_from: Optional[str] = Query(None, description="Filter meetings created on or after this ISO date"),
     date_to: Optional[str] = Query(None, description="Filter meetings created on or before this ISO date"),
     search: Optional[str] = Query(None, description="Text filter across title and filename"),
+    user_id: Optional[str] = Query(None, description="Optional filter by owning user ID"),
     limit: int = Query(50, ge=1, le=200, description="Pagination page size"),
     offset: int = Query(0, ge=0, description="Pagination record offset"),
-    auth: str = Depends(verify_api_key)
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
 ):
-    """
-    List all indexed historical meetings with optional date and text filtering.
-    """
+    """List historical meetings with multi-tenant isolation and text/date filtering."""
     db = ServiceContainer.get_db()
     vdb = ServiceContainer.get_vector_db()
 
+    # Determine effective user_id scope
+    effective_user_id = user_id
+    if current_user and current_user.get("role") != "admin":
+        effective_user_id = current_user.get("user_id")
+
     try:
-        raw_meetings = db.get_all_meetings()
+        raw_meetings = db.get_all_meetings(user_id=effective_user_id)
 
         # Apply filtering
         filtered = []
@@ -436,6 +616,7 @@ def list_meetings(
                     created_at=r.get("created_at"),
                     original_filename=r.get("original_filename"),
                     duration=float(r.get("duration") or 0.0),
+                    user_id=r.get("user_id"),
                     summary_preview=preview,
                     action_items_count=int(r.get("action_item_count") or 0),
                     participants_count=int(r.get("participant_count") or 0),
@@ -460,20 +641,21 @@ def list_meetings(
 @app.get("/meetings/{meeting_id}", response_model=MeetingDetailResponse, tags=["Meetings"])
 def get_meeting_details(
     meeting_id: str = PathParam(..., description="Unique meeting ID"),
-    auth: str = Depends(verify_api_key)
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
 ):
-    """
-    Retrieve full details, transcript, structured summary, action items, and participants for a meeting.
-    """
+    """Retrieve full details, transcript, structured summary, action items, and participants for a meeting."""
     db = ServiceContainer.get_db()
     vdb = ServiceContainer.get_vector_db()
 
+    effective_user_id = current_user.get("user_id") if (current_user and current_user.get("role") != "admin") else None
+
     try:
-        meeting = db.get_meeting(meeting_id)
+        meeting = db.get_meeting(meeting_id, user_id=effective_user_id)
         if not meeting:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Meeting with ID '{meeting_id}' not found."
+                detail=f"Meeting with ID '{meeting_id}' not found or access denied."
             )
 
         vectors = vdb.get_vectors_for_meeting(meeting_id)
@@ -484,6 +666,7 @@ def get_meeting_details(
             created_at=meeting.get("created_at"),
             original_filename=meeting.get("original_filename"),
             duration=float(meeting.get("duration") or 0.0),
+            user_id=meeting.get("user_id"),
             transcript=meeting.get("transcript") or meeting.get("transcript_text") or "",
             summary=meeting.get("summary") or "",
             key_decisions=meeting.get("decisions") or [],
@@ -501,14 +684,141 @@ def get_meeting_details(
         )
 
 
+@app.delete("/meetings/{meeting_id}", tags=["Meetings"])
+def delete_meeting(
+    meeting_id: str = PathParam(..., description="Unique meeting ID to delete"),
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """Delete a meeting and its cascading records with owner access validation."""
+    db = ServiceContainer.get_db()
+    effective_user_id = current_user.get("user_id") if (current_user and current_user.get("role") != "admin") else None
+
+    success = db.delete_meeting(meeting_id, user_id=effective_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting '{meeting_id}' could not be deleted (not found or unauthorized)."
+        )
+    return {"status": "deleted", "meeting_id": meeting_id, "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/meetings/{meeting_id}/analytics", response_model=MeetingAnalyticsResponse, tags=["Meetings & Analytics"])
+def get_meeting_analytics(
+    meeting_id: str = PathParam(..., description="Unique meeting ID"),
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """Compute detailed meeting analytics, task status distributions, and participant accountability."""
+    db = ServiceContainer.get_db()
+    effective_user_id = current_user.get("user_id") if (current_user and current_user.get("role") != "admin") else None
+
+    meeting = db.get_meeting(meeting_id, user_id=effective_user_id)
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting '{meeting_id}' not found."
+        )
+
+    action_items = meeting.get("action_items", [])
+    decisions = meeting.get("decisions", [])
+    participants = meeting.get("participants", [])
+
+    total_actions = len(action_items)
+    completed_actions = sum(1 for a in action_items if (a.get("status") or "").lower() in ["done", "completed"])
+    in_prog_actions = sum(1 for a in action_items if (a.get("status") or "").lower() in ["in progress", "active"])
+    pending_actions = total_actions - completed_actions - in_prog_actions
+
+    priority_dist = {"High": 0, "Medium": 0, "Low": 0}
+    workload: Dict[str, int] = {}
+    deadlines_summary = []
+
+    for a in action_items:
+        prio = a.get("priority") or "Medium"
+        priority_dist[prio] = priority_dist.get(prio, 0) + 1
+        owner = a.get("owner") or "Unassigned"
+        workload[owner] = workload.get(owner, 0) + 1
+        if a.get("deadline") and a.get("deadline").strip().lower() not in ["none", ""]:
+            deadlines_summary.append({
+                "action": a.get("action", ""),
+                "owner": owner,
+                "deadline": a.get("deadline"),
+                "priority": prio,
+                "status": a.get("status", "Pending")
+            })
+
+    return MeetingAnalyticsResponse(
+        meeting_id=meeting_id,
+        title=meeting.get("title", "Meeting"),
+        duration_seconds=float(meeting.get("duration") or 0.0),
+        total_action_items=total_actions,
+        completed_actions=completed_actions,
+        pending_actions=pending_actions,
+        in_progress_actions=in_prog_actions,
+        priority_distribution=priority_dist,
+        decisions_count=len(decisions),
+        participant_count=len(participants),
+        participant_workload=workload,
+        deadlines_summary=deadlines_summary
+    )
+
+
+# ============================================================================
+# Report Generation & Export Endpoint (Task 6)
+# ============================================================================
+
+@app.get("/meetings/{meeting_id}/export", tags=["Reports & Export"])
+def export_meeting_report(
+    meeting_id: str = PathParam(..., description="Unique meeting ID to export"),
+    format: str = Query("pdf", description="Export format: 'pdf' or 'csv'"),
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """Export complete meeting intelligence report as PDF or CSV."""
+    db = ServiceContainer.get_db()
+    effective_user_id = current_user.get("user_id") if (current_user and current_user.get("role") != "admin") else None
+
+    meeting = db.get_meeting(meeting_id, user_id=effective_user_id)
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting '{meeting_id}' not found or unauthorized."
+        )
+
+    fmt = format.lower().strip()
+    if fmt == "pdf":
+        pdf_bytes = generate_meeting_pdf(meeting)
+        filename = f"Meeting_Report_{meeting_id}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    elif fmt == "csv":
+        csv_text = generate_meeting_csv(meeting)
+        filename = f"Meeting_Report_{meeting_id}.csv"
+        return Response(
+            content=csv_text,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported export format '{format}'. Supported formats: 'pdf', 'csv'."
+        )
+
+
+# ============================================================================
+# Semantic Search & RAG Endpoints (Milestones 3 & 4 Task 3)
+# ============================================================================
+
 @app.post("/search", response_model=SearchResponse, tags=["Semantic Search & RAG"])
 def semantic_search(
     request: SearchRequest,
     auth: str = Depends(verify_api_key)
 ):
-    """
-    Execute natural language semantic vector search across all historical meetings with sub-3-second SLA.
-    """
+    """Execute natural language semantic vector search across historical meetings."""
     if not request.query or not request.query.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -573,10 +883,7 @@ def ask_question(
     request: AskRequest,
     auth: str = Depends(verify_api_key)
 ):
-    """
-    Perform Retrieval-Augmented Generation (RAG) question-answering over historical meetings.
-    Returns synthesized grounded answer with explicit meeting citations.
-    """
+    """Perform Grounded Retrieval-Augmented Generation (RAG) question-answering with citations."""
     if not request.question or not request.question.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -589,7 +896,7 @@ def ask_question(
     db = ServiceContainer.get_db()
 
     try:
-        # Step 1: Perform vector retrieval to find most relevant context chunks
+        # Step 1: Perform vector retrieval
         vdb_filters = {}
         if request.meeting_id:
             vdb_filters["meeting_id"] = request.meeting_id
@@ -626,7 +933,7 @@ def ask_question(
                     quote=c_text[:250] + "..." if len(c_text) > 250 else c_text
                 ))
 
-        # If no vectors found, check database meetings text directly
+        # Fallback to database text if no vector chunks found
         if not context_chunks:
             all_meetings = db.get_all_meetings()
             if request.meeting_id:
@@ -648,7 +955,6 @@ def ask_question(
                         quote=snippet[:250]
                     ))
 
-        # If still no context available
         if not context_chunks:
             latency_ms = (time.perf_counter() - start_time) * 1000
             return AskResponse(
@@ -662,7 +968,7 @@ def ask_question(
                 timestamp=datetime.now().isoformat()
             )
 
-        # Step 2: Synthesize answer with LLM or structured RAG synthesis
+        # Step 2: Synthesize grounded response
         combined_context = "\n\n".join(context_chunks)
         answer_text = ""
         grounded = True
@@ -683,11 +989,9 @@ def ask_question(
             except Exception as e:
                 logger.warning(f"LLM generation failed for /ask endpoint: {e}. Falling back to extracted context summary.")
                 answer_text = f"Based on retrieved meeting records:\n" + "\n".join([f"- {c[:180]}..." for c in context_chunks[:3]])
-                grounded = True
                 confidence = 0.6
         else:
             answer_text = f"Based on retrieved meeting records:\n" + "\n".join([f"- {c[:180]}..." for c in context_chunks[:3]])
-            grounded = True
             confidence = 0.6
 
         latency_ms = (time.perf_counter() - start_time) * 1000
@@ -708,3 +1012,168 @@ def ask_question(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Question answering failed: {str(e)}"
         )
+
+
+# ============================================================================
+# Zoom & Google Meet Integrations Endpoints (Tasks 4 & 5)
+# ============================================================================
+
+@app.get("/integrations/zoom/recordings", tags=["Platform Integrations"])
+def list_zoom_recordings(
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    auth: str = Depends(verify_api_key)
+):
+    """List available Zoom cloud recordings."""
+    zoom = ServiceContainer.get_zoom()
+    recordings = zoom.list_recordings(date_from=date_from, date_to=date_to)
+    return {"total": len(recordings), "recordings": recordings}
+
+
+@app.post("/integrations/zoom/import", response_model=IntegrationImportResponse, tags=["Platform Integrations"])
+def import_zoom_recording(
+    request: IntegrationImportRequest,
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """Import and process a specific Zoom cloud recording through the pipeline."""
+    zoom = ServiceContainer.get_zoom()
+    pipeline = ServiceContainer.get_pipeline()
+    db = ServiceContainer.get_db()
+    user_id = request.user_id or (current_user.get("user_id") if current_user else None)
+
+    # Find the recording by ID
+    all_recs = zoom.list_recordings()
+    target_rec = next((r for r in all_recs if str(r.get("id")) == str(request.recording_id)), None)
+
+    if not target_rec:
+        target_rec = {
+            "id": request.recording_id,
+            "topic": request.custom_title or f"Zoom Meeting {request.recording_id}",
+            "start_time": datetime.now().isoformat(),
+            "duration": 30
+        }
+
+    if request.custom_title:
+        target_rec["topic"] = request.custom_title
+
+    result = zoom.process_zoom_recording(
+        recording_data=target_rec,
+        pipeline=pipeline,
+        db_manager=db,
+        user_id=user_id
+    )
+
+    return IntegrationImportResponse(
+        success=result.get("success", False),
+        status=result.get("status", "unknown"),
+        recording_id=request.recording_id,
+        meeting_id=result.get("meeting_id"),
+        title=result.get("title"),
+        message=result.get("message"),
+        error=result.get("error")
+    )
+
+
+@app.post("/integrations/zoom/webhook", tags=["Platform Integrations"])
+async def zoom_webhook(request: Request):
+    """Handle Zoom webhook notifications (recording.completed)."""
+    zoom = ServiceContainer.get_zoom()
+    pipeline = ServiceContainer.get_pipeline()
+    db = ServiceContainer.get_db()
+
+    body_bytes = await request.body()
+    try:
+        payload = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    return zoom.handle_webhook(
+        payload=payload,
+        pipeline=pipeline,
+        db_manager=db
+    )
+
+
+@app.get("/integrations/google-meet/recordings", tags=["Platform Integrations"])
+def list_google_meet_recordings(
+    folder_id: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    auth: str = Depends(verify_api_key)
+):
+    """List available Google Meet recordings from Google Drive."""
+    gmeet = ServiceContainer.get_google_meet()
+    recordings = gmeet.list_recordings(folder_id=folder_id, date_from=date_from)
+    return {"total": len(recordings), "recordings": recordings}
+
+
+@app.post("/integrations/google-meet/import", response_model=IntegrationImportResponse, tags=["Platform Integrations"])
+def import_google_meet_recording(
+    request: IntegrationImportRequest,
+    auth: str = Depends(verify_api_key),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """Import and process a specific Google Meet recording through the pipeline."""
+    gmeet = ServiceContainer.get_google_meet()
+    pipeline = ServiceContainer.get_pipeline()
+    db = ServiceContainer.get_db()
+    user_id = request.user_id or (current_user.get("user_id") if current_user else None)
+
+    all_recs = gmeet.list_recordings()
+    target_rec = next((r for r in all_recs if str(r.get("id")) == str(request.recording_id)), None)
+
+    if not target_rec:
+        target_rec = {
+            "id": request.recording_id,
+            "name": request.custom_title or f"Google Meet {request.recording_id}.mp4",
+            "createdTime": datetime.now().isoformat(),
+            "duration": 180.0
+        }
+
+    if request.custom_title:
+        target_rec["name"] = request.custom_title
+
+    result = gmeet.process_google_meet_recording(
+        recording_data=target_rec,
+        pipeline=pipeline,
+        db_manager=db,
+        user_id=user_id
+    )
+
+    return IntegrationImportResponse(
+        success=result.get("success", False),
+        status=result.get("status", "unknown"),
+        recording_id=request.recording_id,
+        meeting_id=result.get("meeting_id"),
+        title=result.get("title"),
+        message=result.get("message"),
+        error=result.get("error")
+    )
+
+
+@app.post("/integrations/google-meet/webhook", tags=["Platform Integrations"])
+async def google_meet_webhook(request: Request):
+    """Handle Google Drive push notifications for newly uploaded Meet recordings."""
+    return {"status": "received", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/project-documentation", tags=["Documentation"])
+@app.get("/docs/download", tags=["Documentation"])
+def download_project_documentation(format: str = Query("md", enum=["md", "txt", "json"])):
+    """Download the complete end-to-end documentation for the AI Career Intelligence Platform."""
+    doc_path = Path("PROJECT_DOCUMENTATION.md")
+    if not doc_path.exists():
+        raise HTTPException(status_code=404, detail="Documentation file not found on server.")
+
+    if format == "json":
+        text = doc_path.read_text(encoding="utf-8")
+        return {"project": "AI Career Intelligence Platform", "documentation": text}
+
+    media_type = "text/markdown" if format == "md" else "text/plain"
+    filename = f"AI_Career_Intelligence_Platform_Documentation.{format}"
+    return FileResponse(
+        path=str(doc_path.resolve()),
+        filename=filename,
+        media_type=media_type
+    )
+

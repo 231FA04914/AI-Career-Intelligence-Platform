@@ -171,8 +171,9 @@ def render_footer():
     """Render subtle professional footer."""
     html = """
     <div class="app-footer">
-        <div><strong>AI Career Intelligence Platform</strong> • AI-Powered Interview & Career Insights</div>
-        <div>Milestone 2 • Production Ready</div>
+        <div><strong>AI Career Intelligence Platform</strong> • AI-Powered Speech, RAG & Career Analytics</div>
+        <div>v4.0 Enterprise AI SaaS</div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
+

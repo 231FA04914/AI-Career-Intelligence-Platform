@@ -58,7 +58,13 @@ class ParticipantMapper:
         Args:
             llm_service: Optional LLMService instance.
         """
-        self.llm_service = llm_service or LLMService()
+        if llm_service is not None:
+            self.llm_service = llm_service
+        else:
+            try:
+                self.llm_service = LLMService()
+            except Exception:
+                self.llm_service = None
         logger.info("Initialized ParticipantMapper Engine")
 
     def normalize_name(self, raw_name: Optional[str]) -> str:
@@ -154,11 +160,21 @@ class ParticipantMapper:
                 if o and o not in raw_participants:
                     raw_participants.append(o)
         elif not raw_participants:
-            # Fallback to LLM intelligence only if no pre-extracted data was provided
-            intel = self.llm_service.process_transcript(transcript)
-            raw_participants = intel.get("participants", [])
-            if action_items is None:
-                action_items = intel.get("action_items", [])
+            # Fallback to LLM intelligence only if no pre-extracted data was provided and LLM is available
+            if self.llm_service:
+                try:
+                    intel = self.llm_service.process_transcript(transcript)
+                    raw_participants = intel.get("participants", [])
+                    if action_items is None:
+                        action_items = intel.get("action_items", [])
+                except Exception as e:
+                    logger.warning(f"Participant extraction from LLM encountered issue: {e}")
+                    raw_participants = []
+            else:
+                # Heuristic speaker extraction from transcript (e.g., "Alice:", "Marcus (Lead):")
+                import re
+                found_speakers = re.findall(r"(?:^|\n)([A-Z][a-zA-Z\s]{1,25})(?:\s*\([^)]*\))?\s*:", transcript)
+                raw_participants = list(set([s.strip() for s in found_speakers if len(s.strip()) > 2]))
 
         # If action items not provided, use empty list
         if action_items is None:
