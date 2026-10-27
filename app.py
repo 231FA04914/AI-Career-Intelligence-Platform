@@ -198,6 +198,23 @@ def main():
     # Apply existing theme first, then navigation contrast overrides.
     apply_theme()
     apply_sidebar_readability_fix()
+    # Fix headings across all pages
+    st.markdown("""
+    <style>
+    [data-testid="stMain"] h1,
+    [data-testid="stMain"] h2,
+    [data-testid="stMain"] h3 {
+        color: #F8FAFC !important;
+        background: transparent !important;
+        -webkit-text-fill-color: #F8FAFC !important;
+        text-shadow: none !important;
+    }
+    
+    [data-testid="stMain"] {
+        color: #F8FAFC;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     init_session_state()
 
     # ------------------------------------------------
