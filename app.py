@@ -118,7 +118,5 @@
 
     # Global Footer
     render_footer()
-
-
 if __name__ == "__main__":
     main()
